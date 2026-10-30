@@ -1,243 +1,131 @@
+//! Microsoft Graph calls: the signed-in user, chats, their members and messages.
+
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+use crate::message::sanitize;
 
 const GRAPH_API_BASE: &str = "https://graph.microsoft.com/v1.0";
 
+/// Group chats with no topic are named after this many members.
+const NAMED_MEMBERS: usize = 3;
+
+/// One connection pool for every Graph and login request.
+pub(crate) static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct ChatMember {
-    pub id: Option<String>,
+    pub(crate) id: Option<String>,
     #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
-    pub email: Option<String>,
+    pub(crate) display_name: Option<String>,
+    pub(crate) email: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Chat {
-    pub id: String,
-    pub topic: Option<String>,
+    pub(crate) id: String,
+    pub(crate) topic: Option<String>,
+    /// `oneOnOne`, `group` or `meeting`.
     #[serde(rename = "chatType")]
-    pub chat_type: String,
+    pub(crate) kind: String,
     #[serde(rename = "lastUpdatedDateTime")]
-    pub last_updated: Option<String>,
+    pub(crate) last_updated: Option<String>,
+    /// Everyone in the chat except the signed-in user.
     #[serde(skip)]
-    pub members: Vec<ChatMember>,
+    pub(crate) members: Vec<ChatMember>,
+    /// The name shown in the chat list, without control characters.
     #[serde(skip)]
-    pub cached_display_name: Option<String>,
+    pub(crate) display_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Message {
-    pub id: String,
+    pub(crate) id: String,
+    /// RFC 3339, UTC.
     #[serde(rename = "createdDateTime")]
-    pub created_date_time: String,
-    pub from: Option<MessageFrom>,
-    pub body: Option<MessageBody>,
+    pub(crate) created_date_time: String,
+    pub(crate) from: Option<MessageFrom>,
+    pub(crate) body: Option<MessageBody>,
     #[serde(default)]
-    pub attachments: Option<Vec<MessageAttachment>>,
+    pub(crate) attachments: Option<Vec<MessageAttachment>>,
+}
+
+impl Message {
+    /// The sender's display name, or "Unknown" for system messages and apps.
+    pub(crate) fn sender_name(&self) -> &str {
+        self.from
+            .as_ref()
+            .and_then(|f| f.user.as_ref())
+            .and_then(|u| u.display_name.as_deref())
+            .unwrap_or("Unknown")
+    }
+
+    /// The body as Graph sent it, HTML for most messages.
+    pub(crate) fn content(&self) -> &str {
+        self.body
+            .as_ref()
+            .and_then(|b| b.content.as_deref())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn attachment(&self, id: &str) -> Option<&MessageAttachment> {
+        self.attachments.as_ref()?.iter().find(|a| a.id == id)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MessageAttachment {
-    pub id: String,
-    pub name: Option<String>,
+    pub(crate) id: String,
+    pub(crate) name: Option<String>,
     #[serde(rename = "contentType")]
-    pub content_type: Option<String>,
+    pub(crate) content_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MessageFrom {
-    pub user: Option<MessageUser>,
+    pub(crate) user: Option<MessageUser>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MessageUser {
     #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
+    pub(crate) display_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct MessageBody {
-    pub content: Option<String>,
+    pub(crate) content: Option<String>,
 }
 
+/// Graph's wrapper around a list.
 #[derive(Debug, Deserialize)]
-struct ChatsResponse {
-    value: Vec<Chat>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MembersResponse {
-    value: Vec<ChatMember>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MessagesResponse {
-    value: Vec<Message>,
+struct Page<T> {
+    value: Vec<T>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct User {
     #[serde(rename = "displayName")]
-    pub display_name: String,
-    pub id: String,
-    #[serde(rename = "userPrincipalName")]
-    pub user_principal_name: Option<String>,
-}
-
-fn get_profile_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir().context("Could not find config directory")?;
-    let app_dir = config_dir.join(crate::config::APP_DIR_NAME);
-    fs::create_dir_all(&app_dir)?;
-    Ok(app_dir.join("profile.json"))
-}
-
-fn save_profile(user: &User) -> Result<()> {
-    let path = get_profile_path()?;
-    let json = serde_json::to_string_pretty(user)?;
-    crate::config::write_private(&path, &json)?;
-    Ok(())
-}
-
-fn load_profile() -> Result<Option<User>> {
-    let path = get_profile_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let json = fs::read_to_string(path)?;
-    let user: User = serde_json::from_str(&json)?;
-    Ok(Some(user))
-}
-
-pub(crate) async fn get_me(access_token: &str) -> Result<User> {
-    // Try to load from cache first
-    if let Ok(Some(user)) = load_profile() {
-        return Ok(user);
-    }
-
-    let client = reqwest::Client::new();
-    let url = format!("{GRAPH_API_BASE}/me");
-
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        anyhow::bail!("Failed to get user profile: {status} - {text}");
-    }
-
-    let user = response.json::<User>().await?;
-
-    // Save to cache
-    if let Err(e) = save_profile(&user) {
-        eprintln!("Warning: Failed to save profile cache: {e}");
-    }
-
-    Ok(user)
-}
-
-fn abbreviate_name(full_name: &str) -> String {
-    let parts: Vec<&str> = full_name.split_whitespace().collect();
-    match parts.len() {
-        0 => String::new(),
-        1 => parts[0].to_string(),
-        _ => {
-            let first_name = parts[0];
-            let last_initial = parts[parts.len() - 1].chars().next().unwrap_or('?');
-            format!("{first_name} {last_initial}")
-        }
-    }
-}
-
-async fn get_chat_members(access_token: &str, chat_id: &str) -> Result<Vec<ChatMember>> {
-    let client = reqwest::Client::new();
-    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/members");
-
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        // If we can't get members, return empty vec instead of failing
-        return Ok(Vec::new());
-    }
-
-    let members_response = response.json::<MembersResponse>().await?;
-    Ok(members_response.value)
-}
-
-pub(crate) async fn get_messages(access_token: &str, chat_id: &str) -> Result<Vec<Message>> {
-    let client = reqwest::Client::new();
-    // Note: $expand=attachments may not be supported for chat messages
-    // For now, use regular endpoint - attachments will be None and we'll extract from HTML
-    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/messages");
-
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        anyhow::bail!("Failed to get messages: {status} - {text}");
-    }
-
-    let messages_response = response.json::<MessagesResponse>().await?;
-    Ok(messages_response.value)
+    pub(crate) display_name: String,
+    pub(crate) id: String,
 }
 
 #[derive(Debug, Serialize)]
-struct SendMessageRequest {
-    body: SendMessageBody,
+struct SendMessageRequest<'a> {
+    body: SendMessageBody<'a>,
 }
 
 #[derive(Debug, Serialize)]
-struct SendMessageBody {
-    content: String,
+struct SendMessageBody<'a> {
+    content: &'a str,
 }
 
-pub(crate) async fn send_message(access_token: &str, chat_id: &str, content: &str) -> Result<()> {
-    let client = reqwest::Client::new();
-    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/messages");
-
-    let request_body = SendMessageRequest {
-        body: SendMessageBody {
-            content: content.to_string(),
-        },
-    };
-
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        anyhow::bail!("Failed to send message: {status} - {text}");
-    }
-
-    Ok(())
-}
-
-/// Mark a chat as read for the current user
-/// This marks all messages in the chat as read
-///
-/// Note: Microsoft Graph API may not support marking chat messages as read.
-/// This function attempts multiple endpoint variations but may silently fail.
 #[derive(Debug, Serialize)]
 struct MarkChatReadRequest {
     user: MarkChatReadUser,
@@ -246,227 +134,300 @@ struct MarkChatReadRequest {
 #[derive(Debug, Serialize)]
 struct MarkChatReadUser {
     id: String,
-    #[serde(rename = "tenantId", skip_serializing_if = "Option::is_none")]
-    tenant_id: Option<String>,
+    #[serde(rename = "tenantId")]
+    tenant_id: String,
 }
 
-pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> {
-    // Get current user info
-    let user = match get_me(access_token).await {
-        Ok(u) => u,
-        Err(_) => {
-            return Ok(());
-        }
-    };
-
-    // Get tenant ID from organization endpoint
-    let client = reqwest::Client::new();
-    let org_url = format!("{GRAPH_API_BASE}/organization");
-
-    let tenant_id = match client
-        .get(&org_url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .await
-    {
-        Ok(org_response) if org_response.status().is_success() => {
-            #[derive(Deserialize)]
-            struct OrgResponse {
-                value: Vec<Org>,
-            }
-            #[derive(Deserialize)]
-            struct Org {
-                id: String,
-            }
-
-            match org_response.json::<OrgResponse>().await {
-                Ok(org_data) => org_data.value.first().map(|org| org.id.clone()),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-
-    let tenant_id = match tenant_id {
-        Some(id) => id,
-        None => {
-            return Ok(());
-        }
-    };
-
-    // Mark chat as read using the working endpoint with user ID and tenant ID
-    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/markChatReadForUser");
-    let request_body = MarkChatReadRequest {
-        user: MarkChatReadUser {
-            id: user.id,
-            tenant_id: Some(tenant_id),
-        },
-    };
-
-    let _ = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await;
-
-    // Silently ignore errors to avoid disrupting the user experience
-    Ok(())
+#[derive(Debug, Deserialize)]
+struct Organization {
+    id: String,
 }
 
-pub(crate) async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)> {
-    let client = reqwest::Client::new();
-    let url = format!("{GRAPH_API_BASE}/me/chats");
-
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
+async fn get_json<T: DeserializeOwned>(access_token: &str, path: &str) -> Result<T> {
+    let response = CLIENT
+        .get(format!("{GRAPH_API_BASE}{path}"))
+        .bearer_auth(access_token)
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        anyhow::bail!("Failed to get chats: {status} - {text}");
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!("GET {path} failed: {status} - {text}");
+    }
+    Ok(response.json().await?)
+}
+
+fn profile_path() -> Result<PathBuf> {
+    Ok(crate::config::app_dir()?.join("profile.json"))
+}
+
+fn load_profile() -> Result<Option<User>> {
+    let path = profile_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_str(&fs::read_to_string(path)?)?))
+}
+
+fn save_profile(user: &User) -> Result<()> {
+    crate::config::write_private(&profile_path()?, &serde_json::to_string_pretty(user)?)
+}
+
+/// The signed-in user, from `profile.json` when it is cached there.
+pub(crate) async fn get_me(access_token: &str) -> Result<User> {
+    if let Ok(Some(user)) = load_profile() {
+        return Ok(user);
     }
 
-    let chats_response = response.json::<ChatsResponse>().await?;
+    let user: User = get_json(access_token, "/me")
+        .await
+        .context("Failed to get user profile")?;
+    // The cache only saves a request next time, so failing to write it is not an error.
+    save_profile(&user).ok();
+    Ok(user)
+}
 
-    // Process all chats (including meeting chats)
-    let mut chats: Vec<Chat> = chats_response.value;
+/// The chat's messages, newest first.
+pub(crate) async fn get_messages(access_token: &str, chat_id: &str) -> Result<Vec<Message>> {
+    let page: Page<Message> = get_json(access_token, &format!("/chats/{chat_id}/messages")).await?;
+    Ok(page.value)
+}
 
-    // Fetch members for each chat to get display names
+/// Posts `content` to the chat as plain text.
+pub(crate) async fn send_message(access_token: &str, chat_id: &str, content: &str) -> Result<()> {
+    let response = CLIENT
+        .post(format!("{GRAPH_API_BASE}/chats/{chat_id}/messages"))
+        .bearer_auth(access_token)
+        .json(&SendMessageRequest {
+            body: SendMessageBody { content },
+        })
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!("Failed to send message: {status} - {text}");
+    }
+    Ok(())
+}
+
+/// Marks the chat read for the signed-in user. Best effort: any failure is ignored.
+pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) {
+    let Ok(user) = get_me(access_token).await else {
+        return;
+    };
+    let Ok(organizations) = get_json::<Page<Organization>>(access_token, "/organization").await
+    else {
+        return;
+    };
+    let Some(tenant_id) = organizations.value.into_iter().next().map(|org| org.id) else {
+        return;
+    };
+
+    // A failure here leaves the chat unread in other clients, and nothing on screen depends on it.
+    CLIENT
+        .post(format!(
+            "{GRAPH_API_BASE}/chats/{chat_id}/markChatReadForUser"
+        ))
+        .bearer_auth(access_token)
+        .json(&MarkChatReadRequest {
+            user: MarkChatReadUser {
+                id: user.id,
+                tenant_id,
+            },
+        })
+        .send()
+        .await
+        .ok();
+}
+
+/// Every chat of the signed-in user, with members and a display name filled in.
+pub(crate) async fn get_chats(access_token: &str) -> Result<Vec<Chat>> {
+    let mut chats = get_json::<Page<Chat>>(access_token, "/me/chats")
+        .await?
+        .value;
+
     for chat in &mut chats {
-        chat.members = get_chat_members(access_token, &chat.id)
-            .await
-            .unwrap_or_default();
+        chat.members =
+            get_json::<Page<ChatMember>>(access_token, &format!("/chats/{}/members", chat.id))
+                .await
+                .map(|page| page.value)
+                .unwrap_or_default();
     }
 
-    // Detect the current user by finding the member that appears most frequently in oneOnOne chats
-    // This member is most likely the current user
-    let mut current_user_name: Option<String> = None;
-
-    let one_on_one_chats: Vec<&Chat> = chats.iter().filter(|c| c.chat_type == "oneOnOne").collect();
-
-    if !one_on_one_chats.is_empty() {
-        // Count how many times each member NAME appears
-        let mut name_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-
-        for chat in &one_on_one_chats {
-            for member in &chat.members {
-                if let Some(name) = &member.display_name {
-                    *name_counts.entry(name.clone()).or_insert(0) += 1;
-                }
-            }
-        }
-
-        // Find the member that appears most frequently (should be the current user)
-        if let Some((name, count)) = name_counts.iter().max_by_key(|(_, count)| *count) {
-            // Only consider it the current user if they appear in at least 2 chats
-            // or if there's only 1 oneOnOne chat
-            if *count >= 2 || one_on_one_chats.len() == 1 {
-                current_user_name = Some(name.clone());
-            }
-        }
-    }
-
-    // Now filter out the current user from all chats by name
-    if let Some(user_name) = &current_user_name {
+    if let Some(me) = detect_current_user(&chats) {
         for chat in &mut chats {
             chat.members
-                .retain(|m| m.display_name.as_ref() != Some(user_name));
+                .retain(|m| m.display_name.as_deref() != Some(me.as_str()));
         }
     }
 
-    // Compute display names for all chats
     for chat in &mut chats {
-        chat.cached_display_name = if chat.chat_type == "oneOnOne" {
-            // For oneOnOne, use the first member's name
-            chat.members.first().and_then(|m| m.display_name.clone())
-        } else if chat.chat_type == "group" || chat.chat_type == "meeting" {
-            // For group and meeting chats, prefer topic, otherwise show member names
-            if let Some(topic) = &chat.topic {
-                if topic.is_empty() {
-                    // Show up to 3 member names (abbreviated)
-                    let names: Vec<String> = chat
-                        .members
-                        .iter()
-                        .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
-                        .take(3)
-                        .collect();
+        chat.display_name = sanitize(&display_name(chat));
+    }
+    Ok(chats)
+}
 
-                    if names.is_empty() {
-                        let default_name = if chat.chat_type == "meeting" {
-                            "Unnamed Meeting".to_string()
-                        } else {
-                            "Unnamed Group".to_string()
-                        };
-                        Some(default_name)
-                    } else {
-                        Some(names.join(", "))
-                    }
-                } else {
-                    Some(topic.clone())
-                }
-            } else {
-                // No topic - show member names (abbreviated)
-                let names: Vec<String> = chat
-                    .members
-                    .iter()
-                    .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
-                    .take(3)
-                    .collect();
+/// Guesses the signed-in user as the member who appears in the most one-on-one chats.
+///
+/// Needs two appearances, unless there is only one such chat.
+fn detect_current_user(chats: &[Chat]) -> Option<String> {
+    let one_on_one: Vec<&Chat> = chats.iter().filter(|c| c.kind == "oneOnOne").collect();
 
-                if names.is_empty() {
-                    let default_name = if chat.chat_type == "meeting" {
-                        "Unnamed Meeting".to_string()
-                    } else {
-                        "Unnamed Group".to_string()
-                    };
-                    Some(default_name)
-                } else {
-                    Some(names.join(", "))
-                }
-            }
-        } else {
-            // For other chat types, try topic first, then member names, then fallback
-            if let Some(topic) = &chat.topic {
-                if topic.is_empty() {
-                    // Try member names
-                    let names: Vec<String> = chat
-                        .members
-                        .iter()
-                        .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
-                        .take(3)
-                        .collect();
-
-                    if names.is_empty() {
-                        Some("Unknown Chat".to_string())
-                    } else {
-                        Some(names.join(", "))
-                    }
-                } else {
-                    Some(topic.clone())
-                }
-            } else {
-                // Try member names
-                let names: Vec<String> = chat
-                    .members
-                    .iter()
-                    .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
-                    .take(3)
-                    .collect();
-
-                if names.is_empty() {
-                    Some("Unknown Chat".to_string())
-                } else {
-                    Some(names.join(", "))
-                }
-            }
-        };
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for member in one_on_one.iter().flat_map(|c| &c.members) {
+        if let Some(name) = member.display_name.as_deref() {
+            let count = counts.entry(name).or_default();
+            *count = count.saturating_add(1);
+        }
     }
 
-    Ok((chats, current_user_name))
+    let (name, count) = counts.into_iter().max_by_key(|&(_, count)| count)?;
+    (count >= 2 || one_on_one.len() == 1).then(|| name.to_owned())
+}
+
+/// The name for the chat list: the other person in a one-on-one, else the topic, else up to three members, else a placeholder.
+fn display_name(chat: &Chat) -> String {
+    if chat.kind == "oneOnOne" {
+        return chat
+            .members
+            .first()
+            .and_then(|m| m.display_name.clone())
+            .unwrap_or_else(|| "Unknown".to_owned());
+    }
+
+    if let Some(topic) = chat.topic.as_deref().filter(|t| !t.is_empty()) {
+        return topic.to_owned();
+    }
+
+    let names: Vec<String> = chat
+        .members
+        .iter()
+        .filter_map(|m| m.display_name.as_deref().map(abbreviate_name))
+        .take(NAMED_MEMBERS)
+        .collect();
+    if !names.is_empty() {
+        return names.join(", ");
+    }
+
+    match chat.kind.as_str() {
+        "meeting" => "Unnamed Meeting",
+        "group" => "Unnamed Group",
+        _ => "Unknown Chat",
+    }
+    .to_owned()
+}
+
+/// "Ada Byron Lovelace" becomes "Ada L".
+fn abbreviate_name(full_name: &str) -> String {
+    let mut parts = full_name.split_whitespace();
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    match parts.next_back().and_then(|last| last.chars().next()) {
+        Some(initial) => format!("{first} {initial}"),
+        None => first.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::chat;
+
+    fn member(name: &str) -> ChatMember {
+        ChatMember {
+            id: None,
+            display_name: Some(name.to_owned()),
+            email: None,
+        }
+    }
+
+    fn chat_of(kind: &str, topic: Option<&str>, members: &[&str]) -> Chat {
+        Chat {
+            kind: kind.to_owned(),
+            topic: topic.map(str::to_owned),
+            members: members.iter().map(|m| member(m)).collect(),
+            ..chat("id")
+        }
+    }
+
+    #[test]
+    fn abbreviate_name_keeps_first_name_and_last_initial() {
+        assert_eq!(abbreviate_name("Ada Byron Lovelace"), "Ada L");
+        assert_eq!(abbreviate_name("Ada"), "Ada");
+        assert_eq!(abbreviate_name("  "), "");
+        assert_eq!(abbreviate_name("Émile Ångström"), "Émile Å");
+    }
+
+    #[test]
+    fn display_name_for_one_on_one_is_the_other_person() {
+        assert_eq!(
+            display_name(&chat_of("oneOnOne", Some("ignored"), &["Grace Hopper"])),
+            "Grace Hopper"
+        );
+        assert_eq!(display_name(&chat_of("oneOnOne", None, &[])), "Unknown");
+    }
+
+    #[test]
+    fn display_name_prefers_a_topic_then_members_then_a_placeholder() {
+        assert_eq!(
+            display_name(&chat_of("group", Some("Launch"), &["A B"])),
+            "Launch"
+        );
+        assert_eq!(
+            display_name(&chat_of(
+                "group",
+                Some(""),
+                &["Ann Lee", "Bo Ma", "Cy Ng", "Di Oh"]
+            )),
+            "Ann L, Bo M, Cy N"
+        );
+        assert_eq!(
+            display_name(&chat_of("meeting", None, &[])),
+            "Unnamed Meeting"
+        );
+        assert_eq!(display_name(&chat_of("group", None, &[])), "Unnamed Group");
+        assert_eq!(display_name(&chat_of("other", None, &[])), "Unknown Chat");
+    }
+
+    #[test]
+    fn detect_current_user_needs_two_one_on_ones() {
+        let chats = [
+            chat_of("oneOnOne", None, &["Me", "Ann"]),
+            chat_of("oneOnOne", None, &["Me", "Bo"]),
+            chat_of("group", None, &["Ann", "Bo", "Cy"]),
+        ];
+        assert_eq!(detect_current_user(&chats).as_deref(), Some("Me"));
+        assert_eq!(detect_current_user(&chats[2..]), None);
+    }
+
+    #[test]
+    fn message_accessors_fall_back_cleanly() {
+        let message: Message = serde_json::from_str(
+            r#"{"id":"1","createdDateTime":"2026-01-01T00:00:00Z","from":null,"body":{"content":"<p>hi</p>"},
+                "attachments":[{"id":"a","name":"x.pdf","contentType":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(message.sender_name(), "Unknown");
+        assert_eq!(message.content(), "<p>hi</p>");
+        assert_eq!(
+            message.attachment("a").and_then(|a| a.name.as_deref()),
+            Some("x.pdf")
+        );
+        assert!(message.attachment("b").is_none());
+    }
+
+    #[test]
+    fn chats_parse_from_graph_json() {
+        let page: Page<Chat> = serde_json::from_str(
+            r#"{"value":[{"id":"19:x","topic":null,"chatType":"oneOnOne","lastUpdatedDateTime":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let chat = page.value.first().unwrap();
+        assert_eq!(chat.kind, "oneOnOne");
+        assert!(chat.members.is_empty());
+    }
 }

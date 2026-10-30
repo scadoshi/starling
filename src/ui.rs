@@ -1,677 +1,386 @@
+//! Draws the chat list, the message view, the compose box and the status bar.
+
+use chrono::{DateTime, Local};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
+use crate::api::Message;
 use crate::app::App;
+use crate::message::{self, Segment};
 
-// Get icon based on file extension or content type
-fn get_attachment_icon(name: &str, content_type: Option<&str>) -> &'static str {
-    // First try content type
-    if let Some(ct) = content_type {
-        if ct.starts_with("image/") {
-            return "🖼️";
-        } else if ct == "application/pdf" {
-            return "📄";
-        } else if ct.contains("excel") || ct.contains("spreadsheet") {
-            return "📊";
-        } else if ct.contains("word") || ct.contains("document") {
-            return "📝";
-        } else if ct.contains("powerpoint") || ct.contains("presentation") {
-            return "📊";
-        } else if ct.starts_with("video/") {
-            return "🎥";
-        } else if ct.starts_with("audio/") {
-            return "🎵";
-        } else if ct.contains("zip") || ct.contains("archive") {
-            return "📦";
-        }
-    }
+/// The message view shows at most this many of the newest messages.
+const MAX_MESSAGES: usize = 100;
 
-    // Fall back to file extension
-    if let Some(dot_pos) = name.rfind('.') {
-        let ext = name[dot_pos + 1..].to_lowercase();
-        match ext.as_str() {
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" => "🖼️",
-            "pdf" => "📄",
-            "doc" | "docx" => "📝",
-            "xls" | "xlsx" | "csv" => "📊",
-            "ppt" | "pptx" => "📊",
-            "mp4" | "avi" | "mov" | "mkv" | "webm" => "🎥",
-            "mp3" | "wav" | "ogg" | "flac" => "🎵",
-            "zip" | "rar" | "7z" | "tar" | "gz" => "📦",
-            "txt" => "📄",
-            "html" | "htm" => "🌐",
-            "json" | "xml" => "📋",
-            _ => "📎", // Default attachment icon
-        }
+/// Message text wraps at this share of the view width, in percent, so both sides of the conversation stay readable.
+const TEXT_WIDTH_PERCENT: usize = 90;
+
+/// A border on each side.
+const BORDERS: u16 = 2;
+
+pub(crate) fn draw(f: &mut Frame<'_>, app: &mut App) {
+    let [content, status] = Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
+        .margin(1)
+        .areas(f.area());
+    let [chats, right] =
+        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).areas(content);
+
+    if app.input_mode {
+        let [messages, input] =
+            Layout::vertical([Constraint::Min(3), Constraint::Min(3)]).areas(right);
+        draw_messages(f, app, messages);
+        draw_input(f, app, input);
     } else {
-        "📎" // No extension, use default
+        draw_messages(f, app, right);
     }
+    draw_chat_list(f, app, chats);
+    draw_status(f, app, status);
 }
 
-pub(crate) fn draw(f: &mut Frame, app: &mut App) {
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints(
-            [
-                Constraint::Min(3),    // Main content
-                Constraint::Length(3), // Status
-            ]
-            .as_ref(),
-        )
-        .split(f.area());
-
-    // Visual bell effect: flash various UI elements or the background
-    let is_flashing = app
-        .visual_bell_until
-        .is_some_and(|until| std::time::Instant::now() < until);
-
-    // Split main content horizontally: chats on left, messages on right
-    let content_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            [
-                Constraint::Percentage(30), // Chat list
-                Constraint::Percentage(70), // Messages
-            ]
-            .as_ref(),
-        )
-        .split(main_chunks[0]);
-
-    // Split messages area vertically if in input mode
-    let messages_chunks = if app.input_mode {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Min(3), // Messages
-                    Constraint::Min(3), // Input field (min 3 lines for multiline)
-                ]
-                .as_ref(),
-            )
-            .split(content_chunks[1])
-    } else {
-        std::rc::Rc::from(vec![content_chunks[1]].into_boxed_slice())
-    };
-
-    // Chat list
-    let items: Vec<ListItem> = app
+fn draw_chat_list(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let items: Vec<ListItem<'_>> = app
         .chats
         .iter()
         .enumerate()
         .map(|(i, chat)| {
-            let display_name = chat.cached_display_name.as_deref().unwrap_or("Unknown");
-
-            let style = if i == app.selected_index {
+            let name_style = if i == app.selected_index {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-
-            let content = Line::from(vec![
+            ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("[{}] ", chat.chat_type),
+                    format!("[{}] ", chat.kind),
                     Style::default().fg(Color::Cyan),
                 ),
-                Span::styled(display_name, style),
-            ]);
-
-            ListItem::new(content)
+                Span::styled(chat.display_name.as_str(), name_style),
+            ]))
         })
         .collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title("Teams Chats (j↑/k↓ to navigate, q to quit)")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::White)),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .title("Teams Chats (j↓/k↑ to navigate, q to quit)")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::White)),
+    );
+    f.render_widget(list, area);
+}
 
-    f.render_widget(list, content_chunks[0]);
-
-    // Messages panel
-    let messages_content = if app.loading_messages || app.messages.is_empty() {
+fn draw_messages(f: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let inner_width = area.width.saturating_sub(BORDERS);
+    let lines = if app.loading_messages {
         vec![Line::from("Loading messages...")]
+    } else if app.messages.is_empty() {
+        vec![Line::from("No messages yet.")]
     } else {
-        let width = messages_chunks[0].width.saturating_sub(2) as usize; // Account for borders
-        let max_line_width = (width as f32 * 0.9) as usize; // Max 90% width for messages
-
-        let mut lines = Vec::new();
-        let mut last_sender: Option<String> = None;
-        let mut last_message_time: Option<chrono::DateTime<chrono::FixedOffset>> = None;
-
-        // Take 100 newest messages
-        for msg in app.messages.iter().take(100).rev() {
-            let sender_name = msg
-                .from
-                .as_ref()
-                .and_then(|f| f.user.as_ref())
-                .and_then(|u| u.display_name.as_ref())
-                .map_or("Unknown", std::string::String::as_str);
-
-            let current_time = chrono::DateTime::parse_from_rfc3339(&msg.created_date_time).ok();
-
-            let is_me = app
-                .current_user_name
-                .as_ref()
-                .is_some_and(|me| sender_name == me);
-            let same_sender = last_sender.as_deref() == Some(sender_name);
-
-            let significant_time_gap =
-                if let (Some(curr), Some(last)) = (current_time, last_message_time) {
-                    let curr_hour = curr.format("%Y-%m-%d %H").to_string();
-                    let last_hour = last.format("%Y-%m-%d %H").to_string();
-                    curr_hour != last_hour
-                } else {
-                    false
-                };
-
-            let show_header = !same_sender || significant_time_gap;
-
-            last_sender = Some(sender_name.to_string());
-            last_message_time = current_time;
-
-            // Format date: 2025-11-21T19:11:33 -> Nov-21 19:11
-            let date_str = if let Some(dt) = current_time {
-                dt.format("%b %d %H:%M").to_string()
-            } else {
-                msg.created_date_time.clone()
-            };
-
-            let content = msg
-                .body
-                .as_ref()
-                .and_then(|b| b.content.as_ref())
-                .map_or("", std::string::String::as_str);
-
-            // Parse message content into segments (Text, Image, Attachment) to preserve order
-            #[derive(Debug)]
-            enum MessageSegment {
-                Text(String),
-                Image(ImageInfo),
-                Attachment(String), // Attachment ID
-            }
-
-            #[derive(Clone, Debug)]
-            struct ImageInfo {
-                src: Option<String>,
-                alt: Option<String>,
-            }
-
-            let mut segments = Vec::new();
-            // Use existing content variable
-            let mut remaining = content;
-
-            // Single pass parsing to maintain order
-            while !remaining.is_empty() {
-                // Find next tag of interest
-                let img_pos = remaining.find("<img");
-                let attach_pos = remaining.find("<attachment");
-                let emoji_pos = remaining.find("<emoji");
-
-                // Find the earliest tag
-                let next_tag = [
-                    img_pos.map(|p| (p, "img")),
-                    attach_pos.map(|p| (p, "attachment")),
-                    emoji_pos.map(|p| (p, "emoji")),
-                ]
-                .iter()
-                .filter_map(|&x| x)
-                .min_by_key(|&(p, _)| p);
-
-                if let Some((pos, tag_type)) = next_tag {
-                    // Add text before the tag
-                    if pos > 0 {
-                        segments.push(MessageSegment::Text(remaining[..pos].to_string()));
-                    }
-
-                    // Process the tag
-                    let tag_start = pos;
-                    remaining = &remaining[tag_start..];
-
-                    if let Some(tag_end) = remaining.find('>') {
-                        let tag_str = &remaining[..=tag_end];
-
-                        match tag_type {
-                            "img" => {
-                                // Extract src and alt
-                                let mut src = None;
-                                let mut alt = None;
-
-                                for attr_pattern in &["src=\"", "src='"] {
-                                    if let Some(src_start) = tag_str.find(attr_pattern) {
-                                        let value_start = src_start + attr_pattern.len();
-                                        let quote_char = if attr_pattern.ends_with('"') {
-                                            '"'
-                                        } else {
-                                            '\''
-                                        };
-                                        if let Some(src_end) =
-                                            tag_str[value_start..].find(quote_char)
-                                        {
-                                            src = Some(
-                                                tag_str[value_start..value_start + src_end]
-                                                    .to_string(),
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                for attr_pattern in &["alt=\"", "alt='"] {
-                                    if let Some(alt_start) = tag_str.find(attr_pattern) {
-                                        let value_start = alt_start + attr_pattern.len();
-                                        let quote_char = if attr_pattern.ends_with('"') {
-                                            '"'
-                                        } else {
-                                            '\''
-                                        };
-                                        if let Some(alt_end) =
-                                            tag_str[value_start..].find(quote_char)
-                                        {
-                                            alt = Some(
-                                                tag_str[value_start..value_start + alt_end]
-                                                    .to_string(),
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                segments.push(MessageSegment::Image(ImageInfo { src, alt }));
-                                remaining = &remaining[tag_end + 1..];
-                            }
-                            "attachment" => {
-                                // Check if message reference
-                                let is_message_reference = tag_str
-                                    .contains("type=\"messageReference\"")
-                                    || tag_str.contains("type='messageReference'")
-                                    || tag_str.contains("messageReference");
-
-                                if !is_message_reference
-                                    && let Some(id_start) = tag_str.find("id=\"")
-                                {
-                                    let value_start = id_start + 4;
-                                    if let Some(id_end) = tag_str[value_start..].find('"') {
-                                        let attachment_id =
-                                            tag_str[value_start..value_start + id_end].to_string();
-                                        segments.push(MessageSegment::Attachment(attachment_id));
-                                    }
-                                }
-
-                                // Handle closing tag
-                                if tag_str.ends_with("/>") {
-                                    remaining = &remaining[tag_end + 1..];
-                                } else {
-                                    remaining = &remaining[tag_end + 1..];
-                                    if let Some(close_start) = remaining.find("</attachment>") {
-                                        remaining = &remaining[close_start + 13..];
-                                    }
-                                }
-                            }
-                            "emoji" => {
-                                // Extract alt text for emoji
-                                if let Some(alt_start) = tag_str.find("alt=\"") {
-                                    let value_start = alt_start + 5;
-                                    if let Some(alt_end) = tag_str[value_start..].find('"') {
-                                        let emoji =
-                                            tag_str[value_start..value_start + alt_end].to_string();
-                                        segments.push(MessageSegment::Text(emoji));
-                                    }
-                                }
-
-                                // Handle closing tag
-                                remaining = &remaining[tag_end + 1..];
-                                if remaining.starts_with("</emoji")
-                                    && let Some(close_end) = remaining.find('>')
-                                {
-                                    remaining = &remaining[close_end + 1..];
-                                }
-                            }
-                            _ => {
-                                // Should not happen given filter above
-                                remaining = &remaining[tag_end + 1..];
-                            }
-                        }
-                    } else {
-                        // Malformed tag
-                        segments.push(MessageSegment::Text(remaining[..1].to_string()));
-                        remaining = &remaining[1..];
-                    }
-                } else {
-                    // No more tags, add remaining text
-                    segments.push(MessageSegment::Text(remaining.to_string()));
-                    remaining = "";
-                }
-            }
-
-            // Helper to clean text
-            let clean_text = |text: &str| -> String {
-                let mut cleaned = text
-                    .to_string()
-                    .replace("&nbsp;", " ")
-                    .replace("&amp;", "&")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">")
-                    .replace("&quot;", "\"")
-                    .replace("&#39;", "'")
-                    .replace("&apos;", "'")
-                    .replace("&#160;", " ")
-                    .replace("&nbsp", " ");
-
-                cleaned = cleaned
-                    .replace("</p>", "\n")
-                    .replace("<p>", "")
-                    .replace("</div>", "\n")
-                    .replace("<div>", "")
-                    .replace("</li>", "\n")
-                    .replace("<li>", "")
-                    .replace("<br>", "\n")
-                    .replace("<br/>", "\n")
-                    .replace("<br />", "\n")
-                    .replace("</br>", "\n");
-
-                // Remove other HTML tags
-                let mut no_html = String::new();
-                let mut inside_tag = false;
-                for c in cleaned.chars() {
-                    if c == '<' {
-                        inside_tag = true;
-                    } else if c == '>' {
-                        inside_tag = false;
-                    } else if !inside_tag {
-                        no_html.push(c);
-                    }
-                }
-
-                // Clean whitespace
-                let mut final_content = String::new();
-                let mut consecutive_newlines = 0;
-                for c in no_html.chars() {
-                    if c == '\n' {
-                        consecutive_newlines += 1;
-                        if consecutive_newlines <= 2 {
-                            final_content.push(c);
-                        }
-                    } else {
-                        consecutive_newlines = 0;
-                        final_content.push(c);
-                    }
-                }
-                final_content.trim().to_string()
-            };
-
-            // Header logic (same as before)
-            if show_header {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
-
-                let header = if is_me {
-                    format!("{} {}", date_str, "Me")
-                } else {
-                    format!("{sender_name} {date_str}")
-                };
-
-                if is_me {
-                    let padding = width.saturating_sub(header.len());
-                    let pad_str = " ".repeat(padding);
-                    lines.push(Line::from(vec![
-                        Span::raw(pad_str),
-                        Span::styled(
-                            header,
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                } else {
-                    lines.push(Line::from(vec![Span::styled(
-                        header,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )]));
-                }
-            }
-
-            // Render segments
-            for segment in segments {
-                match segment {
-                    MessageSegment::Text(text) => {
-                        let cleaned = clean_text(&text);
-                        if cleaned.is_empty() {
-                            continue;
-                        }
-
-                        let mut wrapped_lines = Vec::new();
-                        for line in cleaned.lines() {
-                            let mut current_line = String::new();
-                            for word in line.split_whitespace() {
-                                if current_line.len() + word.len() + 1 > max_line_width {
-                                    wrapped_lines.push(current_line);
-                                    current_line = String::from(word);
-                                } else {
-                                    if !current_line.is_empty() {
-                                        current_line.push(' ');
-                                    }
-                                    current_line.push_str(word);
-                                }
-                            }
-                            if !current_line.is_empty() {
-                                wrapped_lines.push(current_line);
-                            }
-                        }
-
-                        if is_me {
-                            for line in wrapped_lines {
-                                let padding = width.saturating_sub(line.len());
-                                let pad_str = " ".repeat(padding);
-                                lines.push(Line::from(vec![Span::raw(pad_str), Span::raw(line)]));
-                            }
-                        } else {
-                            for line in wrapped_lines {
-                                lines.push(Line::from(line));
-                            }
-                        }
-                    }
-                    MessageSegment::Image(info) => {
-                        let image_name = info
-                            .alt
-                            .clone()
-                            .or_else(|| {
-                                info.src.as_ref().and_then(|s| {
-                                    s.split('/')
-                                        .next_back()
-                                        .or_else(|| s.split('\\').next_back())
-                                        .map(|n| n.split('?').next().unwrap_or(n).to_string())
-                                })
-                            })
-                            .unwrap_or_else(|| "Pasted Image".to_string());
-
-                        let icon = "🖼️"; // Always use image icon for pasted images
-                        let attachment_text = format!("{icon} {image_name}");
-
-                        if is_me {
-                            let padding = width.saturating_sub(attachment_text.len());
-                            let pad_str = " ".repeat(padding);
-                            lines.push(Line::from(vec![
-                                Span::raw(pad_str),
-                                Span::styled(attachment_text, Style::default().fg(Color::Yellow)),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![Span::styled(
-                                attachment_text,
-                                Style::default().fg(Color::Yellow),
-                            )]));
-                        }
-                    }
-                    MessageSegment::Attachment(id) => {
-                        // Find attachment details in API response
-                        let mut name = None;
-                        let mut content_type = None;
-
-                        if let Some(api_attachments) = &msg.attachments
-                            && let Some(api_att) = api_attachments.iter().find(|a| a.id == id)
-                        {
-                            name = api_att.name.clone();
-                            content_type = api_att.content_type.clone();
-                        }
-
-                        let attachment_name = name.unwrap_or_else(|| "Attachment".to_string());
-                        let icon = get_attachment_icon(&attachment_name, content_type.as_deref());
-                        let attachment_text = format!("{icon} {attachment_name}");
-
-                        if is_me {
-                            let padding = width.saturating_sub(attachment_text.len());
-                            let pad_str = " ".repeat(padding);
-                            lines.push(Line::from(vec![
-                                Span::raw(pad_str),
-                                Span::styled(attachment_text, Style::default().fg(Color::Yellow)),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![Span::styled(
-                                attachment_text,
-                                Style::default().fg(Color::Yellow),
-                            )]));
-                        }
-                    }
-                }
-            }
-
-            // If no segments produced lines (empty message), add empty line
-            if lines.is_empty() || (show_header && lines.len() == 1) { // 1 for header
-                // Check if we actually added any content lines for this message
-                // This is a bit rough, but ensures we don't have invisible messages
-            }
-        }
-
-        lines
+        message_lines(
+            &app.messages,
+            app.current_user_name.as_deref(),
+            usize::from(inner_width),
+        )
     };
 
-    // Calculate scroll
-    let total_lines = messages_content.len() as u16;
-    let viewport_height = messages_chunks[0].height.saturating_sub(2); // Borders
-
-    // Calculate max scroll: if we have more lines than viewport, scroll to show bottom
-    // The newest messages are at the bottom of the content (after .rev(), they're last in lines vector)
-    if total_lines > viewport_height {
-        // To see the last line (index total_lines-1), we need to scroll: total_lines - viewport_height
-        // This positions the viewport so the last line is visible at the bottom
-        app.max_scroll = total_lines.saturating_sub(viewport_height);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total = u16::try_from(paragraph.line_count(inner_width)).unwrap_or(u16::MAX);
+    let viewport = area.height.saturating_sub(BORDERS);
+    app.max_scroll = total.saturating_sub(viewport);
+    app.scroll_offset = if app.snap_to_bottom {
+        app.max_scroll
     } else {
-        app.max_scroll = 0; // No scrolling needed if all fits
-    }
+        app.scroll_offset.min(app.max_scroll)
+    };
 
-    // Always snap to bottom when loading new messages or if explicitly requested
-    // This shows the newest messages at the bottom
-    if app.snap_to_bottom {
-        // Calculate scroll offset to ensure the last line is fully visible
-        // Scroll enough so that the last line (index total_lines-1) appears at the bottom of viewport
-        if total_lines > viewport_height {
-            // Scroll to show the last viewport_height lines
-            // Add extra margin (3-5 lines) to ensure the last message is definitely visible
-            // This accounts for potential wrapping, spacing, or calculation errors
-            let extra_margin = 5u16; // Scroll a bit more than necessary
-            app.scroll_offset = total_lines
-                .saturating_sub(viewport_height)
-                .saturating_add(extra_margin);
-            // Cap at total_lines to prevent overflow (though we should never reach this)
-            app.scroll_offset = std::cmp::min(app.scroll_offset, total_lines.saturating_sub(1));
-        } else {
-            app.scroll_offset = 0;
+    let title = if app.input_mode {
+        "Messages (ESC to cancel)"
+    } else {
+        "Messages (i to compose, PgUp(K)/PgDn(J) to scroll)"
+    };
+    let paragraph = paragraph
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .scroll((app.scroll_offset, 0));
+    f.render_widget(paragraph, area);
+}
+
+/// The conversation as lines, oldest at the top, with the user's own messages on the right.
+///
+/// A header with the sender and time starts each run of messages from one sender, and a new hour starts a new run.
+fn message_lines(messages: &[Message], me: Option<&str>, width: usize) -> Vec<Line<'static>> {
+    let text_width = width.saturating_mul(TEXT_WIDTH_PERCENT) / 100;
+    let mut lines = Vec::new();
+    let mut previous: Option<(&str, Option<String>)> = None;
+
+    for msg in messages.iter().take(MAX_MESSAGES).rev() {
+        let sender = msg.sender_name();
+        let time = DateTime::parse_from_rfc3339(&msg.created_date_time)
+            .ok()
+            .map(|t| t.with_timezone(&Local));
+        let hour = time.map(|t| t.format("%Y-%m-%d %H").to_string());
+        let is_me = me == Some(sender);
+
+        let new_run = previous.as_ref().is_none_or(|(last_sender, last_hour)| {
+            *last_sender != sender || matches!((last_hour, &hour), (Some(a), Some(b)) if a != b)
+        });
+        if new_run {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            let when = time.map_or_else(
+                || message::sanitize(&msg.created_date_time),
+                |t| t.format("%b %d %H:%M").to_string(),
+            );
+            lines.push(header(sender, &when, is_me));
         }
-        // Update max_scroll to allow scrolling to this position
-        app.max_scroll = std::cmp::max(app.max_scroll, app.scroll_offset);
-    } else {
-        // Clamp scroll offset to valid range, but allow the extra margin
-        app.scroll_offset = std::cmp::min(app.scroll_offset, app.max_scroll);
-    }
+        previous = Some((sender, hour));
 
-    let messages_widget = Paragraph::new(messages_content)
+        for segment in message::parse(msg.content()) {
+            match segment {
+                Segment::Text(html) => {
+                    for line in message::wrap(&message::clean_text(&html), text_width) {
+                        lines.push(align(Line::from(line), is_me));
+                    }
+                }
+                Segment::Image { src, alt } => {
+                    let label = message::image_label(src.as_deref(), alt.as_deref());
+                    lines.push(align(attachment_line("🖼️", &label), is_me));
+                }
+                Segment::Attachment(id) => {
+                    let attachment = msg.attachment(&id);
+                    let name = attachment
+                        .and_then(|a| a.name.as_deref())
+                        .map_or_else(|| "Attachment".to_owned(), message::sanitize);
+                    let content_type = attachment.and_then(|a| a.content_type.as_deref());
+                    let icon = message::attachment_icon(&name, content_type);
+                    lines.push(align(attachment_line(icon, &name), is_me));
+                }
+            }
+        }
+    }
+    lines
+}
+
+fn header(sender: &str, when: &str, is_me: bool) -> Line<'static> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    if is_me {
+        Line::styled(format!("{when} Me"), bold.fg(Color::Green)).right_aligned()
+    } else {
+        let sender = message::sanitize(sender);
+        Line::styled(format!("{sender} {when}"), bold.fg(Color::Cyan))
+    }
+}
+
+fn attachment_line(icon: &str, name: &str) -> Line<'static> {
+    Line::styled(format!("{icon} {name}"), Style::default().fg(Color::Yellow))
+}
+
+fn align(line: Line<'static>, is_me: bool) -> Line<'static> {
+    if is_me { line.right_aligned() } else { line }
+}
+
+fn draw_input(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let input = Paragraph::new(app.input_buffer.as_str())
         .block(
             Block::default()
-                .title(if app.input_mode {
-                    "Messages (ESC to cancel)"
-                } else {
-                    "Messages (i to compose, PgUp(K)/PgDn(J) to scroll)"
-                })
-                .borders(Borders::ALL),
+                .title("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel)")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
         )
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .scroll((app.scroll_offset, 0));
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false });
+    f.render_widget(input, area);
+    f.set_cursor_position(input_cursor(&app.input_buffer, area));
+}
 
-    f.render_widget(messages_widget, messages_chunks[0]);
-
-    // Render input field if in input mode
-    if app.input_mode {
-        let input_widget = Paragraph::new(app.input_buffer.as_str())
-            .block(
-                Block::default()
-                    .title(
-                        "Type your message (Enter to send, Alt+Enter for new line, ESC to cancel)",
-                    )
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Green)),
-            )
-            .style(Style::default().fg(Color::White))
-            .wrap(ratatui::widgets::Wrap { trim: false });
-
-        f.render_widget(input_widget, messages_chunks[1]);
-
-        // Calculate cursor position for multiline text
-        let lines: Vec<&str> = app.input_buffer.split('\n').collect();
-        let line_count = lines.len();
-        let current_line = if line_count > 0 { line_count - 1 } else { 0 };
-        let current_line_text = lines.get(current_line).unwrap_or(&"");
-        let cursor_x = messages_chunks[1].x + current_line_text.len() as u16 + 1;
-        let cursor_y = messages_chunks[1].y + current_line as u16 + 1;
-
-        // Make sure cursor doesn't go beyond the input area
-        let max_y = messages_chunks[1].y + messages_chunks[1].height.saturating_sub(1);
-        let final_y = std::cmp::min(cursor_y, max_y);
-
-        f.set_cursor_position((cursor_x, final_y));
+/// Where the cursor sits after the last character typed, kept inside the box's borders.
+fn input_cursor(buffer: &str, area: Rect) -> Position {
+    let last_line = buffer.rsplit('\n').next().unwrap_or_default();
+    let column = u16::try_from(last_line.chars().count()).unwrap_or(u16::MAX);
+    let row = u16::try_from(buffer.matches('\n').count()).unwrap_or(u16::MAX);
+    let right = area.right().saturating_sub(BORDERS);
+    let bottom = area.bottom().saturating_sub(BORDERS);
+    Position {
+        x: area.x.saturating_add(1).saturating_add(column).min(right),
+        y: area.y.saturating_add(1).saturating_add(row).min(bottom),
     }
+}
 
-    // Status bar
-    let status_border_style = if is_flashing {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD) // Flash Red
+fn draw_status(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let flashing = app
+        .visual_bell_until
+        .is_some_and(|until| std::time::Instant::now() < until);
+    let (border, text) = if flashing {
+        let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        (red, red.bg(Color::White))
     } else {
-        Style::default().fg(Color::Green)
-    };
-
-    let status_text_style = if is_flashing {
-        Style::default()
-            .fg(Color::Red)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Green)
+        let green = Style::default().fg(Color::Green);
+        (green, green)
     };
 
     let status = Paragraph::new(format!(
         "{} | Notification (n): {}",
-        app.status, app.notification_mode
+        message::sanitize(&app.status),
+        app.notification_mode
     ))
     .block(
         Block::default()
             .title("Status")
             .borders(Borders::ALL)
-            .border_style(status_border_style),
+            .border_style(border),
     )
-    .style(status_text_style);
+    .style(text);
+    f.render_widget(status, area);
+}
 
-    f.render_widget(status, main_chunks[1]);
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::api::{MessageBody, MessageFrom, MessageUser};
+    use crate::app::tests::{chat, message};
+
+    fn from(sender: &str, id: &str, created: &str, body: &str) -> Message {
+        Message {
+            from: Some(MessageFrom {
+                user: Some(MessageUser {
+                    display_name: Some(sender.to_owned()),
+                }),
+            }),
+            body: Some(MessageBody {
+                content: Some(body.to_owned()),
+            }),
+            ..message(id, created)
+        }
+    }
+
+    fn text_of(lines: &[Line<'_>]) -> Vec<String> {
+        lines.iter().map(ToString::to_string).collect()
+    }
+
+    fn screen(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn message_lines_group_a_run_under_one_header_oldest_first() {
+        let messages = [
+            from("Ann", "3", "2026-01-01T10:02:00Z", "<p>third</p>"),
+            from("Ann", "2", "2026-01-01T10:01:00Z", "second"),
+            from("Bo", "1", "2026-01-01T10:00:00Z", "first"),
+        ];
+        let lines = text_of(&message_lines(&messages, None, 80));
+        assert!(lines.first().is_some_and(|l| l.starts_with("Bo ")));
+        assert_eq!(lines.get(1).map(String::as_str), Some("first"));
+        assert_eq!(lines.get(2).map(String::as_str), Some(""));
+        assert!(lines.get(3).is_some_and(|l| l.starts_with("Ann ")));
+        assert_eq!(
+            lines.get(4..).map(<[String]>::to_vec),
+            Some(vec!["second".to_owned(), "third".to_owned()])
+        );
+    }
+
+    #[test]
+    fn message_lines_put_my_messages_on_the_right() {
+        let messages = [from("Me", "1", "2026-01-01T10:00:00Z", "hello")];
+        let lines = message_lines(&messages, Some("Me"), 80);
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.alignment == Some(ratatui::layout::Alignment::Right))
+        );
+        assert!(
+            lines
+                .first()
+                .is_some_and(|l| l.to_string().ends_with(" Me"))
+        );
+    }
+
+    #[test]
+    fn message_lines_show_attachments_by_name() {
+        let mut msg = from(
+            "Ann",
+            "1",
+            "2026-01-01T10:00:00Z",
+            r#"see <attachment id="a"></attachment>"#,
+        );
+        msg.attachments = Some(vec![crate::api::MessageAttachment {
+            id: "a".to_owned(),
+            name: Some("plan.pdf".to_owned()),
+            content_type: None,
+        }]);
+        let lines = text_of(&message_lines(&[msg], None, 80));
+        assert!(lines.iter().any(|l| l == "📄 plan.pdf"));
+    }
+
+    #[test]
+    fn message_lines_strip_escapes_from_senders() {
+        let messages = [from("Eve\u{1b}[2J", "1", "2026-01-01T10:00:00Z", "x")];
+        let lines = text_of(&message_lines(&messages, None, 80));
+        assert!(lines.iter().all(|l| !l.contains('\u{1b}')));
+    }
+
+    #[test]
+    fn input_cursor_follows_the_last_line_and_stays_inside() {
+        let area = Rect::new(10, 20, 30, 5);
+        assert_eq!(input_cursor("", area), Position { x: 11, y: 21 });
+        assert_eq!(input_cursor("ab\nhé", area), Position { x: 13, y: 22 });
+        assert_eq!(
+            input_cursor(&"x".repeat(100), area),
+            Position { x: 38, y: 21 }
+        );
+        assert_eq!(
+            input_cursor("\n\n\n\n\n\n", area),
+            Position { x: 11, y: 23 }
+        );
+    }
+
+    #[test]
+    fn draw_shows_chats_and_snaps_to_the_newest_message() {
+        let mut app = App::new();
+        let mut named = chat("c1");
+        named.display_name = "Launch crew".to_owned();
+        app.set_chats(vec![named]);
+        app.set_messages(
+            (0..40)
+                .rev()
+                .map(|i| {
+                    from(
+                        "Ann",
+                        &i.to_string(),
+                        &format!("2026-01-01T10:{i:02}:00Z"),
+                        &format!("line {i}"),
+                    )
+                })
+                .collect(),
+        );
+
+        let text = screen(&mut app, 100, 20);
+        assert!(text.contains("Launch crew"));
+        assert!(text.contains("line 39"));
+        assert!(!text.contains("line 0 "));
+        assert!(app.max_scroll > 0);
+        assert_eq!(app.scroll_offset, app.max_scroll);
+    }
+
+    #[test]
+    fn draw_keeps_a_scrolled_view_in_range() {
+        let mut app = App::new();
+        app.set_messages(vec![from("Ann", "1", "2026-01-01T10:00:00Z", "only")]);
+        app.snap_to_bottom = false;
+        app.scroll_offset = 500;
+        screen(&mut app, 80, 20);
+        assert_eq!(app.scroll_offset, 0);
+    }
 }

@@ -1,3 +1,5 @@
+//! Sign-in with the OAuth 2.0 device-code flow, and the saved token that keeps it.
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -5,7 +7,44 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-fn get_client_id() -> Result<String> {
+use crate::api::CLIENT;
+
+const SCOPES: &str = "User.Read Chat.ReadWrite offline_access";
+const DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode";
+const TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+
+/// A token this close to expiry is refreshed before use, in seconds.
+const EXPIRY_MARGIN_SECS: u64 = 300;
+
+/// Added to the poll interval each time the server answers `slow_down`, per RFC 8628.
+const SLOW_DOWN_SECS: u64 = 5;
+
+#[derive(Debug, Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    interval: u64,
+    /// Tells the user where to go and which code to enter.
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct TokenResponse {
+    access_token: String,
+    token_type: String,
+    /// Seconds from issue.
+    expires_in: u64,
+    refresh_token: Option<String>,
+    /// Unix seconds. Zero in a response, set before saving.
+    #[serde(default)]
+    expires_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenErrorResponse {
+    error: String,
+}
+
+fn client_id() -> Result<String> {
     dotenvy::dotenv().ok();
     if let Ok(id) = std::env::var("CLIENT_ID") {
         return Ok(id);
@@ -13,195 +52,131 @@ fn get_client_id() -> Result<String> {
 
     crate::config::load_config()
         .and_then(|config| config.client_id)
-        .context("No client ID set. Put your Azure app's client ID in ~/.config/starling/config.json or CLIENT_ID; AZURE_SETUP.md has the steps")
+        .with_context(|| {
+            let path = crate::config::app_dir()
+                .map_or_else(|_| "config.json".into(), |dir| dir.join("config.json"));
+            format!(
+                "No client ID set. Put your Azure app's client ID in {} or the CLIENT_ID environment variable; AZURE_SETUP.md has the steps",
+                path.display()
+            )
+        })
 }
 
-const TENANT: &str = "common";
-const SCOPES: &str = "User.Read Chat.ReadWrite offline_access";
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct DeviceCodeResponse {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub expires_in: u64,
-    pub interval: u64,
-    pub message: String,
+fn now_secs() -> Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct TokenResponse {
-    pub access_token: String,
-    pub token_type: String,
-    pub expires_in: u64,
-    pub refresh_token: Option<String>,
-    #[serde(default)]
-    pub expires_at: u64,
+fn token_path() -> Result<PathBuf> {
+    Ok(crate::config::app_dir()?.join("token.json"))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct TokenErrorResponse {
-    error: String,
-}
-
-fn get_token_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir().context("Could not find config directory")?;
-    let app_dir = config_dir.join(crate::config::APP_DIR_NAME);
-    fs::create_dir_all(&app_dir)?;
-    Ok(app_dir.join("token.json"))
-}
-
-fn save_token(token: &TokenResponse) -> Result<()> {
-    let path = get_token_path()?;
-    let json = serde_json::to_string_pretty(token)?;
-    crate::config::write_private(&path, &json)?;
-    Ok(())
+/// Stamps the expiry time and saves the token owner-only.
+fn save_token(mut token: TokenResponse) -> Result<TokenResponse> {
+    token.expires_at = now_secs()?.saturating_add(token.expires_in);
+    crate::config::write_private(&token_path()?, &serde_json::to_string_pretty(&token)?)?;
+    Ok(token)
 }
 
 fn load_token() -> Result<Option<TokenResponse>> {
-    let path = get_token_path()?;
+    let path = token_path()?;
     if !path.exists() {
         return Ok(None);
     }
-
-    let json = fs::read_to_string(path)?;
-    let mut token: TokenResponse = serde_json::from_str(&json)?;
-
-    // Set expires_at based on current time if not set
-    if token.expires_at == 0 {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        token.expires_at = now + token.expires_in;
-    }
-
-    Ok(Some(token))
+    Ok(Some(serde_json::from_str(&fs::read_to_string(path)?)?))
 }
 
-pub(crate) async fn start_device_flow() -> Result<DeviceCodeResponse> {
-    let client = reqwest::Client::new();
-    let url = format!("https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/devicecode");
+async fn start_device_flow() -> Result<DeviceCodeResponse> {
+    let client_id = client_id()?;
+    let response = CLIENT
+        .post(DEVICE_CODE_URL)
+        .form(&[("client_id", client_id.as_str()), ("scope", SCOPES)])
+        .send()
+        .await?;
 
-    let client_id = get_client_id()?;
-    let params = [("client_id", client_id.as_str()), ("scope", SCOPES)];
-
-    let response = client.post(&url).form(&params).send().await?;
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await?;
-        anyhow::bail!("Failed to start device flow ({status}): {error_text}");
+    let status = response.status();
+    let text = response.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("Failed to start device flow ({status}): {text}");
     }
-
-    // Try to parse as DeviceCodeResponse, but show the actual response if it fails
-    let response_text = response.text().await?;
-    match serde_json::from_str::<DeviceCodeResponse>(&response_text) {
-        Ok(device_code) => Ok(device_code),
-        Err(e) => {
-            eprintln!("Failed to parse response. Raw response:");
-            eprintln!("{response_text}");
-            anyhow::bail!("Failed to parse device code response: {e}")
-        }
-    }
+    serde_json::from_str(&text).with_context(|| format!("Unexpected device code response: {text}"))
 }
 
-pub(crate) async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenResponse> {
-    let client = reqwest::Client::new();
-    let url = format!("https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token");
-
-    let client_id = get_client_id()?;
+async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenResponse> {
+    let client_id = client_id()?;
+    let mut interval = interval;
 
     loop {
         tokio::time::sleep(Duration::from_secs(interval)).await;
 
-        let params = [
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", client_id.as_str()),
-            ("device_code", device_code),
-        ];
-
-        let response = client.post(&url).form(&params).send().await?;
+        let response = CLIENT
+            .post(TOKEN_URL)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", client_id.as_str()),
+                ("device_code", device_code),
+            ])
+            .send()
+            .await?;
 
         if response.status().is_success() {
-            let mut token = response.json::<TokenResponse>().await?;
-            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-            token.expires_at = now + token.expires_in;
-            save_token(&token)?;
-            return Ok(token);
-        } else {
-            let error = response.json::<TokenErrorResponse>().await?;
-            if error.error == "authorization_pending" {
-                // Continue polling
-                continue;
-            } else if error.error == "authorization_declined" {
-                anyhow::bail!("User declined authorization");
-            } else if error.error == "expired_token" {
-                anyhow::bail!("Device code expired");
-            }
-            anyhow::bail!("Error: {}", error.error);
+            return save_token(response.json().await?);
+        }
+
+        match response.json::<TokenErrorResponse>().await?.error.as_str() {
+            "authorization_pending" => {}
+            "slow_down" => interval = interval.saturating_add(SLOW_DOWN_SECS),
+            "authorization_declined" => anyhow::bail!("Sign-in was declined"),
+            "expired_token" => anyhow::bail!("The sign-in code expired before it was used"),
+            other => anyhow::bail!("Sign-in failed: {other}"),
         }
     }
 }
 
+async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
+    let client_id = client_id()?;
+    let response = CLIENT
+        .post(TOKEN_URL)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", client_id.as_str()),
+            ("refresh_token", refresh_token),
+            ("scope", SCOPES),
+        ])
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to refresh token: {}", response.status());
+    }
+    save_token(response.json().await?)
+}
+
+/// An access token from the saved token, refreshed when it is near expiry, without asking the user.
 pub(crate) async fn get_valid_token_silent() -> Result<String> {
-    // Try to load existing token
-    if let Some(token) = load_token()? {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-
-        // If token is still valid (with 5 min buffer), return it
-        if token.expires_at > now + 300 {
-            return Ok(token.access_token);
-        }
-
-        // Try to refresh if we have a refresh token
-        if let Some(refresh_token) = token.refresh_token
-            && let Ok(new_token) = refresh_access_token(&refresh_token).await
-        {
-            return Ok(new_token.access_token);
-        }
+    let token = load_token()?.context("Not signed in")?;
+    if token.expires_at > now_secs()?.saturating_add(EXPIRY_MARGIN_SECS) {
+        return Ok(token.access_token);
     }
-    anyhow::bail!("No valid token found and refresh failed")
+    let refresh_token = token
+        .refresh_token
+        .context("Token expired and has no refresh token")?;
+    Ok(refresh_access_token(&refresh_token).await?.access_token)
 }
 
+/// An access token, signing in with a device code on the terminal when there is no usable saved token.
+#[expect(
+    clippy::print_stdout,
+    reason = "the sign-in prompt prints before the TUI takes the terminal"
+)]
 pub(crate) async fn get_access_token() -> Result<String> {
-    // Try to get silent token first
     if let Ok(token) = get_valid_token_silent().await {
         return Ok(token);
     }
 
-    // Need to do full device flow
-    let device_code_response = start_device_flow().await?;
-    println!("\n{}", device_code_response.message);
-    println!("\nWaiting for authentication...\n");
+    let device_code = start_device_flow().await?;
+    println!("\n{}", device_code.message);
+    println!("\nWaiting for sign-in...\n");
 
-    let token = poll_for_token(
-        &device_code_response.device_code,
-        device_code_response.interval,
-    )
-    .await?;
+    let token = poll_for_token(&device_code.device_code, device_code.interval).await?;
     Ok(token.access_token)
-}
-
-async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
-    let client = reqwest::Client::new();
-    let url = format!("https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token");
-
-    let client_id = get_client_id()?;
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("client_id", client_id.as_str()),
-        ("refresh_token", refresh_token),
-        ("scope", SCOPES),
-    ];
-
-    let response = client.post(&url).form(&params).send().await?;
-
-    if response.status().is_success() {
-        let mut token = response.json::<TokenResponse>().await?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        token.expires_at = now + token.expires_in;
-        save_token(&token)?;
-        Ok(token)
-    } else {
-        anyhow::bail!("Failed to refresh token")
-    }
 }
