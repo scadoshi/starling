@@ -1,28 +1,12 @@
 # Changelog
 
-## v0.7.1 
+## Unreleased
 
-- Notifications (press m to switch between all)
-- Adding J/K to scroll messages
- 
-## v0.7
+Starling forks [nospor/teams-tui](https://github.com/nospor/teams-tui) at its last release, v0.7.1. That project's changelog covers the history before the fork.
 
-- Unfortunately I needed to revert images preview as it was breaking application in longer run
-- Attachments names appear in proper order now
-
-## v0.6
-
-- Info about attachments in messages view
-- Preview of images in messages view (only with terminals that support it, eg Kitty, iTerm2)
-
-## v0.5.2
-
-- Compose multi line messages
-
-## v0.5.1
-
-- Added meeting chats
-
-## v0.5
-
-- Setting viewed messages as read
+- Sign-in, loading and the client ID prompt happen in the TUI. `.env` files are no longer read; `CLIENT_ID` still overrides the saved client ID.
+- Shift+Enter starts a new line in terminals with the kitty keyboard protocol; Alt+Enter works everywhere. Ctrl+C quits from any screen.
+- Your own account is left out of chat member lists by user ID, so one-on-one chats are named after the other person.
+- Token, profile and config files are readable by your user only, and the client ID is never borrowed from Microsoft's own apps.
+- Message text is stripped of control characters, so a message cannot send escape sequences to your terminal.
+- Times show in local time, text can be selected with the mouse, and a chat with no messages no longer shows "Loading messages..." forever.
