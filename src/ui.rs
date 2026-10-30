@@ -142,9 +142,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(list, content_chunks[0]);
 
     // Messages panel
-    let messages_content = if app.loading_messages {
-        vec![Line::from("Loading messages...")]
-    } else if app.messages.is_empty() {
+    let messages_content = if app.loading_messages || app.messages.is_empty() {
         vec![Line::from("Loading messages...")]
     } else {
         let width = messages_chunks[0].width.saturating_sub(2) as usize; // Account for borders
@@ -169,7 +167,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let is_me = app
                 .current_user_name
                 .as_ref()
-                .map_or(false, |me| sender_name == me);
+                .is_some_and(|me| sender_name == me);
             let same_sender = last_sender.as_deref() == Some(sender_name);
 
             let significant_time_gap =
@@ -500,8 +498,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                             .or_else(|| {
                                 info.src.as_ref().and_then(|s| {
                                     s.split('/')
-                                        .last()
-                                        .or_else(|| s.split('\\').last())
+                                        .next_back()
+                                        .or_else(|| s.split('\\').next_back())
                                         .map(|n| n.split('?').next().unwrap_or(n).to_string())
                                 })
                             })
