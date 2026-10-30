@@ -25,18 +25,21 @@ Nothing prints to stdout once the terminal is initialized. A message for the use
 
 ## Styling
 
-Use the `Stylize` helpers: `"Me".green().bold()`, `Style::new().cyan()`. Not `Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)`.
+Every color comes from the current theme's `theme::Palette`, by role. No widget names a color itself.
 
-| Meaning | Style |
+| Role | Used for |
 | --- | --- |
-| Primary, selection, other people | `.cyan()` |
-| The user, success, focus | `.green()` |
-| Errors | `.red()` |
-| Attachments, highlights | `.yellow()` |
-| Hints, secondary text | `.dim()` |
-| Key names in hints | `.bold()` |
+| `base` | Text and background of every cell. `draw` paints it first, and panels and popups set it again after `Clear`. |
+| `accent` | The selection and other people's names |
+| `me` | The user's own messages, focused boxes, the status text |
+| `error` | Errors and the bell flash |
+| `attachment` | Attachments and images |
+| `muted` | Hints, timestamps, placeholders |
+| `border` | Unfocused borders |
 
-No `Color::White`, `Color::Black` or blue: they vanish on one theme or the other. Text that needs no color takes the terminal's default. Color is never the only signal: selection also gets bold and a symbol, errors also say so in words.
+Bold, underline and reverse come from the `Stylize` helpers on top of a role: `palette.accent.bold()`, `Line::from(x).style(palette.me).bold()`.
+
+The Terminal theme maps the roles to ANSI names (cyan, green, red, yellow, dim) so it follows the terminal's own palette; the orangui themes are 24-bit colors from `palettes.rs`. Color is never the only signal: selection also gets bold and a `>` marker, errors also say so in words.
 
 ## Layout
 

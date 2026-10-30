@@ -16,6 +16,8 @@ pub(crate) struct Config {
     /// The Azure app registration to sign in with. `CLIENT_ID` in the environment wins over it.
     pub(crate) client_id: Option<String>,
     pub(crate) notification_mode: Option<NotificationMode>,
+    /// `terminal`, or an orangui theme such as `gruvbox-dark`. See [`crate::theme::Theme::parse`].
+    pub(crate) theme: Option<String>,
 }
 
 /// `~/.config/starling` on Linux, `~/Library/Application Support/starling` on macOS, created owner-only if missing.
@@ -58,14 +60,14 @@ pub(crate) fn load_config() -> Option<Config> {
     serde_json::from_str(&json).ok()
 }
 
-/// Stores the client ID in `config.json`, keeping the other settings.
-pub(crate) fn save_client_id(client_id: &str) -> Result<()> {
+/// Changes one or more settings in `config.json`, keeping the rest.
+pub(crate) fn update(change: impl FnOnce(&mut Config)) -> Result<()> {
     let mut config = load_config().unwrap_or_default();
-    config.client_id = Some(client_id.to_owned());
+    change(&mut config);
     save_config(&config)
 }
 
-pub(crate) fn save_config(config: &Config) -> Result<()> {
+fn save_config(config: &Config) -> Result<()> {
     write_private(
         &app_dir()?.join("config.json"),
         &serde_json::to_string_pretty(config)?,
@@ -85,10 +87,12 @@ mod tests {
         let saved = serde_json::to_string(&Config {
             client_id: None,
             notification_mode: Some(NotificationMode::Both),
+            theme: Some("nord-light".to_owned()),
         })
         .unwrap();
         let loaded: Config = serde_json::from_str(&saved).unwrap();
         assert_eq!(loaded.notification_mode, Some(NotificationMode::Both));
+        assert_eq!(loaded.theme.as_deref(), Some("nord-light"));
     }
 
     #[cfg(unix)]

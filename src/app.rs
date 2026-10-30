@@ -8,6 +8,23 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Chat, Message};
+use crate::theme::{self, Row, Theme};
+
+/// Which way the theme picker's selection moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Up,
+    Down,
+}
+
+/// How the theme picker closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PickerExit {
+    /// Keeps the theme on screen.
+    Keep,
+    /// Puts back the theme the picker opened on.
+    Cancel,
+}
 
 /// Lines one `PageUp` or `PageDown` moves the message view.
 const SCROLL_STEP: u16 = 10;
@@ -101,6 +118,19 @@ pub(crate) struct App {
     pub(crate) snap_to_bottom: bool,
     pub(crate) notification_mode: NotificationMode,
     pub(crate) visual_bell_until: Option<Instant>,
+    /// The theme on screen, which the picker changes as the selection moves.
+    pub(crate) theme: Theme,
+    /// The theme picker, when it is open.
+    pub(crate) picker: Option<ThemePicker>,
+}
+
+/// The open theme picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ThemePicker {
+    /// The selected row of [`theme::rows`], always a choice, never a header.
+    pub(crate) row: usize,
+    /// The theme before the picker opened, which Esc puts back.
+    pub(crate) original: Theme,
 }
 
 impl App {
@@ -120,6 +150,8 @@ impl App {
             snap_to_bottom: true,
             notification_mode: NotificationMode::None,
             visual_bell_until: None,
+            theme: Theme::default(),
+            picker: None,
         }
     }
 
@@ -160,6 +192,47 @@ impl App {
             .selected_index
             .checked_sub(1)
             .unwrap_or_else(|| self.chats.len().saturating_sub(1));
+    }
+
+    /// Opens the theme picker on the current theme.
+    pub(crate) fn open_theme_picker(&mut self) {
+        let current = Row::Choice(self.theme.family);
+        let row = theme::rows()
+            .iter()
+            .position(|r| *r == current)
+            .unwrap_or(0);
+        self.picker = Some(ThemePicker {
+            row,
+            original: self.theme,
+        });
+    }
+
+    /// Moves the picker's selection to the next choice in `direction`, skipping headers, and shows that theme.
+    pub(crate) fn move_theme_picker(&mut self, direction: Direction) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let rows = theme::rows();
+        let is_choice = |i: &usize| matches!(rows.get(*i), Some(Row::Choice(_)));
+        let next = match direction {
+            Direction::Down => (picker.row.saturating_add(1)..rows.len()).find(is_choice),
+            Direction::Up => (0..picker.row).rev().find(is_choice),
+        };
+        if let Some(row) = next {
+            picker.row = row;
+        }
+        if let Some(Row::Choice(family)) = rows.get(picker.row) {
+            self.theme.family = *family;
+        }
+    }
+
+    /// Closes the picker, keeping the theme on screen or putting back the one it opened on.
+    pub(crate) fn close_theme_picker(&mut self, choice: PickerExit) {
+        if let Some(picker) = self.picker.take()
+            && choice == PickerExit::Cancel
+        {
+            self.theme = picker.original;
+        }
     }
 
     pub(crate) fn scroll_up(&mut self) {
@@ -387,6 +460,56 @@ pub(crate) mod tests {
         assert_eq!(app.scroll_offset, 5);
         app.scroll_down();
         assert!(app.snap_to_bottom);
+    }
+
+    #[test]
+    fn the_picker_previews_skips_headers_and_cancels_back() {
+        let mut app = App::new();
+        app.open_theme_picker();
+        assert_eq!(app.picker.map(|p| p.row), Some(0));
+
+        app.move_theme_picker(Direction::Up);
+        assert_eq!(app.theme, Theme::default());
+
+        app.move_theme_picker(Direction::Down);
+        let first = crate::palettes::GROUPS
+            .first()
+            .and_then(|g| g.slugs.first())
+            .copied();
+        assert_eq!(app.theme.family, first);
+        assert_eq!(app.picker.map(|p| p.row), Some(2), "row 1 is a header");
+
+        app.close_theme_picker(PickerExit::Cancel);
+        assert_eq!(app.theme, Theme::default());
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn the_picker_opens_on_the_current_theme_and_keeps_a_choice() {
+        let mut app = App::new();
+        app.theme = Theme::parse("nord-light").unwrap();
+        app.open_theme_picker();
+        let row = app.picker.map(|p| p.row).unwrap();
+        assert_eq!(theme::rows().get(row), Some(&Row::Choice(Some("nord"))));
+
+        app.move_theme_picker(Direction::Down);
+        app.close_theme_picker(PickerExit::Keep);
+        assert_ne!(app.theme.family, Some("nord"));
+        assert_eq!(app.theme.mode, theme::Mode::Light);
+    }
+
+    #[test]
+    fn the_picker_stops_at_the_last_theme() {
+        let mut app = App::new();
+        app.open_theme_picker();
+        for _ in 0..200 {
+            app.move_theme_picker(Direction::Down);
+        }
+        let last = crate::palettes::GROUPS
+            .last()
+            .and_then(|g| g.slugs.last())
+            .copied();
+        assert_eq!(app.theme.family, last);
     }
 
     #[test]

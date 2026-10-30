@@ -29,8 +29,13 @@ A `CLIENT_ID` environment variable overrides the saved client ID.
 | `Shift+Enter` | New line (`Alt+Enter` in terminals that send Shift+Enter as Enter, such as Terminal.app) |
 | `Esc` | Cancel compose |
 | `n` | Cycle new-message notifications: none, terminal bell, desktop, both |
+| `t` | Pick a theme: move to preview, `Tab` for dark or light, `Enter` to keep, `Esc` to cancel |
 | `q` | Quit |
 | `Ctrl+C` | Quit from any screen |
+
+## Themes
+
+Starling has the 50 themes from [orangui](https://github.com/scadoshi/orangui), each in dark and light, plus Terminal, which uses your terminal's own colors and is the default. The orangui themes are 24-bit color, which iTerm2, Ghostty, kitty, WezTerm and current Terminal.app show correctly; inside tmux, turn on its truecolor support.
 
 ## Files
 

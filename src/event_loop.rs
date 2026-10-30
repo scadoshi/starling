@@ -15,7 +15,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::MissedTickBehavior;
 
 use crate::api::{self, Chat, Message, Startup};
-use crate::app::{self, App, ChatOrder, Screen, SignInCode};
+use crate::app::{
+    self, App, ChatOrder, Direction, NotificationMode, PickerExit, Screen, SignInCode,
+};
 use crate::{auth, config, message, ui};
 
 /// How often the loop wakes without input, to redraw timed effects and count toward the message refresh.
@@ -38,6 +40,9 @@ enum Request {
         client_id: String,
     },
     SaveClientId(String),
+    /// Stores a theme by its [`crate::theme::Theme::key`].
+    SaveTheme(String),
+    SaveNotificationMode(NotificationMode),
     /// Fetches what the chat screen needs to open.
     Load,
     /// Fetches the chat list once, after a new message moves a chat.
@@ -327,13 +332,17 @@ impl EventLoop {
     }
 
     fn handle_chats_key(&mut self, app: &mut App, key: KeyEvent) -> Flow {
+        if app.picker.is_some() {
+            self.handle_picker_key(app, key.code);
+            return Flow::Continue;
+        }
         let before = app.selected_chat_id().map(str::to_owned);
         match key.code {
             KeyCode::PageUp => app.scroll_up(),
             KeyCode::PageDown => app.scroll_down(),
             _ if app.input_mode => self.handle_input_key(app, key),
             code => {
-                if handle_browse_key(app, code) == Flow::Quit {
+                if self.handle_browse_key(app, code) == Flow::Quit {
                     return Flow::Quit;
                 }
             }
@@ -342,6 +351,44 @@ impl EventLoop {
             self.open_selected(app);
         }
         Flow::Continue
+    }
+
+    /// Keys on the chat screen outside the compose box.
+    fn handle_browse_key(&mut self, app: &mut App, code: KeyCode) -> Flow {
+        match code {
+            KeyCode::Char('q') => return Flow::Quit,
+            KeyCode::Down | KeyCode::Char('j') => app.next_chat(),
+            KeyCode::Up | KeyCode::Char('k') => app.previous_chat(),
+            KeyCode::Char('K') => app.scroll_up(),
+            KeyCode::Char('J') => app.scroll_down(),
+            KeyCode::Char('n') => {
+                app.notification_mode = app.notification_mode.next();
+                self.pending
+                    .push(Request::SaveNotificationMode(app.notification_mode));
+            }
+            KeyCode::Char('t') => app.open_theme_picker(),
+            KeyCode::Char('i') => {
+                app.input_mode = true;
+                app.input_buffer.clear();
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    /// Keys while the theme picker is open. Moving previews a theme; Enter keeps and saves it; Esc puts back the one before.
+    fn handle_picker_key(&mut self, app: &mut App, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => app.move_theme_picker(Direction::Up),
+            KeyCode::Down | KeyCode::Char('j') => app.move_theme_picker(Direction::Down),
+            KeyCode::Tab | KeyCode::Char('m') => app.theme.mode = app.theme.mode.toggled(),
+            KeyCode::Enter => {
+                app.close_theme_picker(PickerExit::Keep);
+                self.pending.push(Request::SaveTheme(app.theme.key()));
+            }
+            KeyCode::Esc | KeyCode::Char('q' | 't') => app.close_theme_picker(PickerExit::Cancel),
+            _ => {}
+        }
     }
 
     fn handle_input_key(&mut self, app: &mut App, key: KeyEvent) {
@@ -401,38 +448,15 @@ impl EventLoop {
     }
 }
 
-/// Keys on the chat screen outside the compose box.
-fn handle_browse_key(app: &mut App, code: KeyCode) -> Flow {
-    match code {
-        KeyCode::Char('q') => return Flow::Quit,
-        KeyCode::Down | KeyCode::Char('j') => app.next_chat(),
-        KeyCode::Up | KeyCode::Char('k') => app.previous_chat(),
-        KeyCode::Char('K') => app.scroll_up(),
-        KeyCode::Char('J') => app.scroll_down(),
-        KeyCode::Char('n') => {
-            app.notification_mode = app.notification_mode.next();
-            let mut config = config::load_config().unwrap_or_default();
-            config.notification_mode = Some(app.notification_mode);
-            if let Err(e) = config::save_config(&config) {
-                app.status = format!("Could not save the notification mode: {e}");
-            }
-        }
-        KeyCode::Char('i') => {
-            app.input_mode = true;
-            app.input_buffer.clear();
-        }
-        _ => {}
-    }
-    Flow::Continue
-}
-
 /// Runs one request. Chat requests without a usable token, and failed fetches, give nothing: the next refresh tries again.
 async fn perform(tx: &UnboundedSender<Update>, request: Request) -> Option<Update> {
     match request {
         Request::SignIn { client_id } => Some(sign_in(tx, &client_id).await),
-        Request::SaveClientId(client_id) => config::save_client_id(&client_id)
-            .err()
-            .map(|e| Update::Status(format!("Could not save the client ID: {e:#}"))),
+        Request::SaveClientId(client_id) => save("client ID", |c| c.client_id = Some(client_id)),
+        Request::SaveTheme(key) => save("theme", |c| c.theme = Some(key)),
+        Request::SaveNotificationMode(mode) => {
+            save("notification mode", |c| c.notification_mode = Some(mode))
+        }
         Request::Load => Some(match load().await {
             Ok(startup) => Update::Loaded(startup),
             Err(e) => Update::LoadFailed(format!("{e:#}")),
@@ -468,6 +492,13 @@ async fn perform(tx: &UnboundedSender<Update>, request: Request) -> Option<Updat
             }
         }
     }
+}
+
+/// Changes the config file, and reports a failure in the status bar.
+fn save(what: &str, change: impl FnOnce(&mut config::Config)) -> Option<Update> {
+    config::update(change)
+        .err()
+        .map(|e| Update::Status(format!("Could not save the {what}: {e:#}")))
 }
 
 async fn token() -> Option<String> {
@@ -839,6 +870,53 @@ mod tests {
             Flow::Continue
         );
         event_loop.handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(
+            event_loop.handle_key(&mut app, key(KeyCode::Char('q'))),
+            Flow::Quit
+        );
+    }
+
+    #[test]
+    fn n_cycles_notifications_and_queues_the_save() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        event_loop.handle_key(&mut app, key(KeyCode::Char('n')));
+        assert_eq!(app.notification_mode, NotificationMode::Console);
+        assert_eq!(
+            event_loop.pending,
+            [Request::SaveNotificationMode(NotificationMode::Console)]
+        );
+    }
+
+    #[test]
+    fn the_theme_picker_previews_then_saves_on_enter() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        event_loop.handle_key(&mut app, key(KeyCode::Char('t')));
+        assert!(app.picker.is_some());
+        event_loop.handle_key(&mut app, key(KeyCode::Char('j')));
+        event_loop.handle_key(&mut app, key(KeyCode::Tab));
+        let previewed = app.theme;
+        assert_eq!(
+            app.selected_chat_id(),
+            Some("a"),
+            "j moves the picker, not the chats"
+        );
+
+        event_loop.handle_key(&mut app, key(KeyCode::Enter));
+        assert!(app.picker.is_none());
+        assert_eq!(app.theme, previewed);
+        assert_eq!(event_loop.pending, [Request::SaveTheme(previewed.key())]);
+        assert!(previewed.key().ends_with("-light"));
+    }
+
+    #[test]
+    fn esc_leaves_the_theme_picker_without_saving() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        let before = app.theme;
+        event_loop.handle_key(&mut app, key(KeyCode::Char('t')));
+        event_loop.handle_key(&mut app, key(KeyCode::Down));
+        event_loop.handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.theme, before);
+        assert_eq!(event_loop.pending, []);
         assert_eq!(
             event_loop.handle_key(&mut app, key(KeyCode::Char('q'))),
             Flow::Quit

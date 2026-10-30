@@ -6,6 +6,9 @@ mod auth;
 mod config;
 mod event_loop;
 mod message;
+#[rustfmt::skip]
+mod palettes;
+mod theme;
 mod ui;
 
 use std::io;
@@ -18,12 +21,18 @@ use crossterm::{execute, terminal};
 
 use crate::app::App;
 use crate::event_loop::EventLoop;
+use crate::theme::Theme;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut app = App::new();
-    if let Some(mode) = config::load_config().and_then(|c| c.notification_mode) {
-        app.notification_mode = mode;
+    if let Some(config) = config::load_config() {
+        if let Some(mode) = config.notification_mode {
+            app.notification_mode = mode;
+        }
+        if let Some(theme) = config.theme.as_deref().and_then(Theme::parse) {
+            app.theme = theme;
+        }
     }
 
     let mut terminal = ratatui::try_init()?;
