@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
             token
         }
         Err(e) => {
-            eprintln!("✗ Authentication failed: {}", e);
+            eprintln!("✗ Authentication failed: {e}");
             return Err(e);
         }
     };
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
             Some(user)
         }
         Err(e) => {
-            eprintln!("⚠ Failed to fetch user profile: {}", e);
+            eprintln!("⚠ Failed to fetch user profile: {e}");
             None
         }
     };
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
             result
         }
         Err(e) => {
-            eprintln!("✗ Failed to fetch chats: {}", e);
+            eprintln!("✗ Failed to fetch chats: {e}");
             return Err(e);
         }
     };
@@ -179,7 +179,7 @@ async fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        println!("{:?}", err);
+        println!("{err:?}");
     }
 
     Ok(())
@@ -321,10 +321,8 @@ async fn run_app(
             if let Some(id) = current_chat_id {
                 if let Some(new_index) = app.chats.iter().position(|c| c.id == id) {
                     app.selected_index = new_index;
-                } else {
-                    if app.selected_index >= app.chats.len() {
-                        app.selected_index = app.chats.len().saturating_sub(1);
-                    }
+                } else if app.selected_index >= app.chats.len() {
+                    app.selected_index = app.chats.len().saturating_sub(1);
                 }
             } else {
                 if app.chats.is_empty() {
@@ -394,8 +392,7 @@ async fn run_app(
                     .as_ref()
                     .and_then(|f| f.user.as_ref())
                     .and_then(|u| u.display_name.as_ref())
-                    .map(|s| s.as_str())
-                    .unwrap_or("Unknown");
+                    .map_or("Unknown", std::string::String::as_str);
 
                 let should_notify = match app.notification_mode {
                     NotificationMode::None => false,
@@ -406,7 +403,7 @@ async fn run_app(
 
                 if should_notify {
                     let mode = app.notification_mode;
-                    let body = format!("New message from {}", sender);
+                    let body = format!("New message from {sender}");
 
                     // console notification
                     if mode == NotificationMode::Console || mode == NotificationMode::Both {
@@ -484,15 +481,15 @@ async fn run_app(
             // Only update if we're still on the same chat
             if chat_index == app.selected_index {
                 // Check if messages actually changed to avoid unnecessary snaps/renders
-                let should_update = if app.messages.len() != messages.len() {
-                    true
-                } else {
+                let should_update = if app.messages.len() == messages.len() {
                     // Check last message ID
                     match (app.messages.last(), messages.last()) {
                         (Some(curr), Some(new)) => curr.id != new.id,
                         (None, None) => false,
                         _ => true,
                     }
+                } else {
+                    true
                 };
 
                 if should_update {
@@ -502,8 +499,7 @@ async fn run_app(
                     if let Some(last_msg) = messages.last() {
                         let is_new = chat_last_message_ids
                             .get(&chat_id)
-                            .map(|old_id| old_id != &last_msg.id)
-                            .unwrap_or(false); // First time seeing messages = not new (just loading)
+                            .is_some_and(|old_id| old_id != &last_msg.id); // First time seeing messages = not new (just loading)
 
                         // Update last message ID and time
                         chat_last_message_ids.insert(chat_id.clone(), last_msg.id.clone());
@@ -599,7 +595,7 @@ async fn run_app(
                                             match api::send_message(&token, &chat_id, &message)
                                                 .await
                                             {
-                                                Ok(_) => {
+                                                Ok(()) => {
                                                     // Reload messages
                                                     if let Ok(messages) =
                                                         api::get_messages(&token, &chat_id).await
@@ -613,7 +609,7 @@ async fn run_app(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("Failed to send message: {}", e)
+                                                    eprintln!("Failed to send message: {e}");
                                                 }
                                             }
                                         }

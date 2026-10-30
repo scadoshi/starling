@@ -20,7 +20,7 @@ const TENANT: &str = "common";
 const SCOPES: &str = "User.Read Chat.ReadWrite offline_access";
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DeviceCodeResponse {
+pub(crate) struct DeviceCodeResponse {
     pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,
@@ -30,7 +30,7 @@ pub struct DeviceCodeResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TokenResponse {
+pub(crate) struct TokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
@@ -76,12 +76,9 @@ fn load_token() -> Result<Option<TokenResponse>> {
     Ok(Some(token))
 }
 
-pub async fn start_device_flow() -> Result<DeviceCodeResponse> {
+pub(crate) async fn start_device_flow() -> Result<DeviceCodeResponse> {
     let client = reqwest::Client::new();
-    let url = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/devicecode",
-        TENANT
-    );
+    let url = format!("https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/devicecode");
 
     let client_id = get_client_id()?;
     let params = [("client_id", client_id.as_str()), ("scope", SCOPES)];
@@ -92,7 +89,7 @@ pub async fn start_device_flow() -> Result<DeviceCodeResponse> {
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await?;
-        anyhow::bail!("Failed to start device flow ({}): {}", status, error_text);
+        anyhow::bail!("Failed to start device flow ({status}): {error_text}");
     }
 
     // Try to parse as DeviceCodeResponse, but show the actual response if it fails
@@ -101,18 +98,15 @@ pub async fn start_device_flow() -> Result<DeviceCodeResponse> {
         Ok(device_code) => Ok(device_code),
         Err(e) => {
             eprintln!("Failed to parse response. Raw response:");
-            eprintln!("{}", response_text);
-            anyhow::bail!("Failed to parse device code response: {}", e)
+            eprintln!("{response_text}");
+            anyhow::bail!("Failed to parse device code response: {e}")
         }
     }
 }
 
-pub async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenResponse> {
+pub(crate) async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenResponse> {
     let client = reqwest::Client::new();
-    let url = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-        TENANT
-    );
+    let url = format!("https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token");
 
     let client_id = get_client_id()?;
 
@@ -142,14 +136,13 @@ pub async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenRes
                 anyhow::bail!("User declined authorization");
             } else if error.error == "expired_token" {
                 anyhow::bail!("Device code expired");
-            } else {
-                anyhow::bail!("Error: {}", error.error);
             }
+            anyhow::bail!("Error: {}", error.error);
         }
     }
 }
 
-pub async fn get_valid_token_silent() -> Result<String> {
+pub(crate) async fn get_valid_token_silent() -> Result<String> {
     // Try to load existing token
     if let Some(token) = load_token()? {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -169,7 +162,7 @@ pub async fn get_valid_token_silent() -> Result<String> {
     anyhow::bail!("No valid token found and refresh failed")
 }
 
-pub async fn get_access_token() -> Result<String> {
+pub(crate) async fn get_access_token() -> Result<String> {
     // Try to get silent token first
     if let Ok(token) = get_valid_token_silent().await {
         return Ok(token);
@@ -190,10 +183,7 @@ pub async fn get_access_token() -> Result<String> {
 
 async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
     let client = reqwest::Client::new();
-    let url = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-        TENANT
-    );
+    let url = format!("https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token");
 
     let client_id = get_client_id()?;
     let params = [

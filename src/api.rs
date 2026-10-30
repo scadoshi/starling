@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 const GRAPH_API_BASE: &str = "https://graph.microsoft.com/v1.0";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ChatMember {
+pub(crate) struct ChatMember {
     pub id: Option<String>,
     #[serde(rename = "displayName")]
     pub display_name: Option<String>,
@@ -15,7 +15,7 @@ pub struct ChatMember {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Chat {
+pub(crate) struct Chat {
     pub id: String,
     pub topic: Option<String>,
     #[serde(rename = "chatType")]
@@ -29,7 +29,7 @@ pub struct Chat {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Message {
+pub(crate) struct Message {
     pub id: String,
     #[serde(rename = "createdDateTime")]
     pub created_date_time: String,
@@ -40,7 +40,7 @@ pub struct Message {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageAttachment {
+pub(crate) struct MessageAttachment {
     pub id: String,
     pub name: Option<String>,
     #[serde(rename = "contentType")]
@@ -48,18 +48,18 @@ pub struct MessageAttachment {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageFrom {
+pub(crate) struct MessageFrom {
     pub user: Option<MessageUser>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageUser {
+pub(crate) struct MessageUser {
     #[serde(rename = "displayName")]
     pub display_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageBody {
+pub(crate) struct MessageBody {
     pub content: Option<String>,
 }
 
@@ -79,7 +79,7 @@ struct MessagesResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct User {
+pub(crate) struct User {
     #[serde(rename = "displayName")]
     pub display_name: String,
     pub id: String,
@@ -111,32 +111,32 @@ fn load_profile() -> Result<Option<User>> {
     Ok(Some(user))
 }
 
-pub async fn get_me(access_token: &str) -> Result<User> {
+pub(crate) async fn get_me(access_token: &str) -> Result<User> {
     // Try to load from cache first
     if let Ok(Some(user)) = load_profile() {
         return Ok(user);
     }
 
     let client = reqwest::Client::new();
-    let url = format!("{}/me", GRAPH_API_BASE);
+    let url = format!("{GRAPH_API_BASE}/me");
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .send()
         .await?;
 
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await?;
-        anyhow::bail!("Failed to get user profile: {} - {}", status, text);
+        anyhow::bail!("Failed to get user profile: {status} - {text}");
     }
 
     let user = response.json::<User>().await?;
 
     // Save to cache
     if let Err(e) = save_profile(&user) {
-        eprintln!("Warning: Failed to save profile cache: {}", e);
+        eprintln!("Warning: Failed to save profile cache: {e}");
     }
 
     Ok(user)
@@ -150,18 +150,18 @@ fn abbreviate_name(full_name: &str) -> String {
         _ => {
             let first_name = parts[0];
             let last_initial = parts[parts.len() - 1].chars().next().unwrap_or('?');
-            format!("{} {}", first_name, last_initial)
+            format!("{first_name} {last_initial}")
         }
     }
 }
 
 async fn get_chat_members(access_token: &str, chat_id: &str) -> Result<Vec<ChatMember>> {
     let client = reqwest::Client::new();
-    let url = format!("{}/chats/{}/members", GRAPH_API_BASE, chat_id);
+    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/members");
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .send()
         .await?;
 
@@ -174,22 +174,22 @@ async fn get_chat_members(access_token: &str, chat_id: &str) -> Result<Vec<ChatM
     Ok(members_response.value)
 }
 
-pub async fn get_messages(access_token: &str, chat_id: &str) -> Result<Vec<Message>> {
+pub(crate) async fn get_messages(access_token: &str, chat_id: &str) -> Result<Vec<Message>> {
     let client = reqwest::Client::new();
     // Note: $expand=attachments may not be supported for chat messages
     // For now, use regular endpoint - attachments will be None and we'll extract from HTML
-    let url = format!("{}/chats/{}/messages", GRAPH_API_BASE, chat_id);
+    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/messages");
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .send()
         .await?;
 
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await?;
-        anyhow::bail!("Failed to get messages: {} - {}", status, text);
+        anyhow::bail!("Failed to get messages: {status} - {text}");
     }
 
     let messages_response = response.json::<MessagesResponse>().await?;
@@ -206,9 +206,9 @@ struct SendMessageBody {
     content: String,
 }
 
-pub async fn send_message(access_token: &str, chat_id: &str, content: &str) -> Result<()> {
+pub(crate) async fn send_message(access_token: &str, chat_id: &str, content: &str) -> Result<()> {
     let client = reqwest::Client::new();
-    let url = format!("{}/chats/{}/messages", GRAPH_API_BASE, chat_id);
+    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/messages");
 
     let request_body = SendMessageRequest {
         body: SendMessageBody {
@@ -218,7 +218,7 @@ pub async fn send_message(access_token: &str, chat_id: &str, content: &str) -> R
 
     let response = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -227,7 +227,7 @@ pub async fn send_message(access_token: &str, chat_id: &str, content: &str) -> R
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await?;
-        anyhow::bail!("Failed to send message: {} - {}", status, text);
+        anyhow::bail!("Failed to send message: {status} - {text}");
     }
 
     Ok(())
@@ -250,7 +250,7 @@ struct MarkChatReadUser {
     tenant_id: Option<String>,
 }
 
-pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> {
+pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> {
     // Get current user info
     let user = match get_me(access_token).await {
         Ok(u) => u,
@@ -261,11 +261,11 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
 
     // Get tenant ID from organization endpoint
     let client = reqwest::Client::new();
-    let org_url = format!("{}/organization", GRAPH_API_BASE);
+    let org_url = format!("{GRAPH_API_BASE}/organization");
 
     let tenant_id = match client
         .get(&org_url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .send()
         .await
     {
@@ -296,7 +296,7 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
     };
 
     // Mark chat as read using the working endpoint with user ID and tenant ID
-    let url = format!("{}/chats/{}/markChatReadForUser", GRAPH_API_BASE, chat_id);
+    let url = format!("{GRAPH_API_BASE}/chats/{chat_id}/markChatReadForUser");
     let request_body = MarkChatReadRequest {
         user: MarkChatReadUser {
             id: user.id,
@@ -306,7 +306,7 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
 
     let _ = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -316,20 +316,20 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
     Ok(())
 }
 
-pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)> {
+pub(crate) async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)> {
     let client = reqwest::Client::new();
-    let url = format!("{}/me/chats", GRAPH_API_BASE);
+    let url = format!("{GRAPH_API_BASE}/me/chats");
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .send()
         .await?;
 
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await?;
-        anyhow::bail!("Failed to get chats: {} - {}", status, text);
+        anyhow::bail!("Failed to get chats: {status} - {text}");
     }
 
     let chats_response = response.json::<ChatsResponse>().await?;
@@ -376,12 +376,8 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
     // Now filter out the current user from all chats by name
     if let Some(user_name) = &current_user_name {
         for chat in &mut chats {
-            chat.members.retain(|m| {
-                m.display_name
-                    .as_ref()
-                    .map(|name| name != user_name)
-                    .unwrap_or(true)
-            });
+            chat.members
+                .retain(|m| m.display_name.as_ref() != Some(user_name));
         }
     }
 
@@ -393,9 +389,7 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
         } else if chat.chat_type == "group" || chat.chat_type == "meeting" {
             // For group and meeting chats, prefer topic, otherwise show member names
             if let Some(topic) = &chat.topic {
-                if !topic.is_empty() {
-                    Some(topic.clone())
-                } else {
+                if topic.is_empty() {
                     // Show up to 3 member names (abbreviated)
                     let names: Vec<String> = chat
                         .members
@@ -404,16 +398,18 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                         .take(3)
                         .collect();
 
-                    if !names.is_empty() {
-                        Some(names.join(", "))
-                    } else {
+                    if names.is_empty() {
                         let default_name = if chat.chat_type == "meeting" {
                             "Unnamed Meeting".to_string()
                         } else {
                             "Unnamed Group".to_string()
                         };
                         Some(default_name)
+                    } else {
+                        Some(names.join(", "))
                     }
+                } else {
+                    Some(topic.clone())
                 }
             } else {
                 // No topic - show member names (abbreviated)
@@ -424,23 +420,21 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                     .take(3)
                     .collect();
 
-                if !names.is_empty() {
-                    Some(names.join(", "))
-                } else {
+                if names.is_empty() {
                     let default_name = if chat.chat_type == "meeting" {
                         "Unnamed Meeting".to_string()
                     } else {
                         "Unnamed Group".to_string()
                     };
                     Some(default_name)
+                } else {
+                    Some(names.join(", "))
                 }
             }
         } else {
             // For other chat types, try topic first, then member names, then fallback
             if let Some(topic) = &chat.topic {
-                if !topic.is_empty() {
-                    Some(topic.clone())
-                } else {
+                if topic.is_empty() {
                     // Try member names
                     let names: Vec<String> = chat
                         .members
@@ -449,11 +443,13 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                         .take(3)
                         .collect();
 
-                    if !names.is_empty() {
-                        Some(names.join(", "))
-                    } else {
+                    if names.is_empty() {
                         Some("Unknown Chat".to_string())
+                    } else {
+                        Some(names.join(", "))
                     }
+                } else {
+                    Some(topic.clone())
                 }
             } else {
                 // Try member names
@@ -464,10 +460,10 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                     .take(3)
                     .collect();
 
-                if !names.is_empty() {
-                    Some(names.join(", "))
-                } else {
+                if names.is_empty() {
                     Some("Unknown Chat".to_string())
+                } else {
+                    Some(names.join(", "))
                 }
             }
         };

@@ -51,7 +51,7 @@ fn get_attachment_icon(name: &str, content_type: Option<&str>) -> &'static str {
     }
 }
 
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -67,8 +67,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Visual bell effect: flash various UI elements or the background
     let is_flashing = app
         .visual_bell_until
-        .map(|until| std::time::Instant::now() < until)
-        .unwrap_or(false);
+        .is_some_and(|until| std::time::Instant::now() < until);
 
     // Split main content horizontally: chats on left, messages on right
     let content_chunks = Layout::default()
@@ -159,8 +158,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .as_ref()
                 .and_then(|f| f.user.as_ref())
                 .and_then(|u| u.display_name.as_ref())
-                .map(|s| s.as_str())
-                .unwrap_or("Unknown");
+                .map_or("Unknown", std::string::String::as_str);
 
             let current_time = chrono::DateTime::parse_from_rfc3339(&msg.created_date_time).ok();
 
@@ -195,8 +193,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .body
                 .as_ref()
                 .and_then(|b| b.content.as_ref())
-                .map(|c| c.as_str())
-                .unwrap_or("");
+                .map_or("", std::string::String::as_str);
 
             // Parse message content into segments (Text, Image, Attachment) to preserve order
             #[derive(Debug)]
@@ -244,7 +241,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     remaining = &remaining[tag_start..];
 
                     if let Some(tag_end) = remaining.find('>') {
-                        let tag_str = &remaining[..tag_end + 1];
+                        let tag_str = &remaining[..=tag_end];
 
                         match tag_type {
                             "img" => {
@@ -426,7 +423,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 let header = if is_me {
                     format!("{} {}", date_str, "Me")
                 } else {
-                    format!("{} {}", sender_name, date_str)
+                    format!("{sender_name} {date_str}")
                 };
 
                 if is_me {
@@ -506,7 +503,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                             .unwrap_or_else(|| "Pasted Image".to_string());
 
                         let icon = "🖼️"; // Always use image icon for pasted images
-                        let attachment_text = format!("{} {}", icon, image_name);
+                        let attachment_text = format!("{icon} {image_name}");
 
                         if is_me {
                             let padding = width.saturating_sub(attachment_text.len());
@@ -536,7 +533,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
                         let attachment_name = name.unwrap_or_else(|| "Attachment".to_string());
                         let icon = get_attachment_icon(&attachment_name, content_type.as_deref());
-                        let attachment_text = format!("{} {}", icon, attachment_name);
+                        let attachment_text = format!("{icon} {attachment_name}");
 
                         if is_me {
                             let padding = width.saturating_sub(attachment_text.len());

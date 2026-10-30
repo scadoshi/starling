@@ -23,7 +23,7 @@ impl fmt::Display for NotificationMode {
     }
 }
 
-pub struct App {
+pub(crate) struct App {
     pub chats: Vec<Chat>,
     pub status: String,
     pub selected_index: usize,
@@ -40,7 +40,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> App {
+    pub(crate) fn new() -> App {
         App {
             chats: Vec::new(),
             status: "Loading...".to_string(),
@@ -58,35 +58,35 @@ impl App {
         }
     }
 
-    pub fn set_chats(&mut self, chats: Vec<Chat>) {
+    pub(crate) fn set_chats(&mut self, chats: Vec<Chat>) {
         self.chats = chats;
         self.status = format!("Loaded {} chats", self.chats.len());
     }
 
-    pub fn set_current_user(&mut self, name: String) {
+    pub(crate) fn set_current_user(&mut self, name: String) {
         self.current_user_name = Some(name);
     }
 
-    pub fn set_messages(&mut self, messages: Vec<Message>) {
+    pub(crate) fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
         self.loading_messages = false;
     }
 
-    pub fn set_loading_messages(&mut self, loading: bool) {
+    pub(crate) fn set_loading_messages(&mut self, loading: bool) {
         self.loading_messages = loading;
     }
 
-    pub fn get_selected_chat(&self) -> Option<&Chat> {
+    pub(crate) fn get_selected_chat(&self) -> Option<&Chat> {
         self.chats.get(self.selected_index)
     }
 
-    pub fn next_chat(&mut self) {
+    pub(crate) fn next_chat(&mut self) {
         if !self.chats.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.chats.len();
         }
     }
 
-    pub fn previous_chat(&mut self) {
+    pub(crate) fn previous_chat(&mut self) {
         if !self.chats.is_empty() {
             if self.selected_index > 0 {
                 self.selected_index -= 1;
@@ -96,7 +96,7 @@ impl App {
         }
     }
 
-    pub fn toggle_notification_mode(&mut self) {
+    pub(crate) fn toggle_notification_mode(&mut self) {
         self.notification_mode = match self.notification_mode {
             NotificationMode::None => NotificationMode::Console,
             NotificationMode::Console => NotificationMode::System,
