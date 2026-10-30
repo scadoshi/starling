@@ -7,7 +7,7 @@ If your organization doesn't let you register apps, ask your IT admin to do thes
 ## Register the app
 
 1. Open the [Microsoft Entra admin center](https://entra.microsoft.com/) and go to App registrations, then New registration.
-2. Name it anything, such as `Starling`. For supported account types, pick "Accounts in any organizational directory": Starling signs in through Microsoft's common endpoint, which single-tenant apps can't use. Leave the redirect URI empty; device-code sign-in doesn't use one.
+2. Name it anything, such as `Starling`. For supported account types, pick "Multiple Entra ID tenants" (older portals call it "Accounts in any organizational directory"). Starling signs in through Microsoft's common endpoint, which rejects single-tenant apps with `AADSTS50194`. Leave the redirect URI empty; device-code sign-in doesn't use one.
 3. Register, and copy the Application (client) ID from the overview page. It looks like `12345678-1234-1234-1234-123456789abc`.
 
 ## Allow device-code sign-in
@@ -35,6 +35,7 @@ Starling shows Microsoft's error on the client ID screen. The common ones:
 | Error | Cause |
 | --- | --- |
 | `AADSTS50059` | No app has that client ID. Check you copied the Application (client) ID, not the object or tenant ID. |
+| `AADSTS50194` | The app is single tenant. Change supported account types to Multiple Entra ID tenants under Authentication. |
 | `AADSTS7000218` | Public client flows are off. |
 | `AADSTS65001` or "admin consent required" | Your organization requires an admin to approve the permissions. |
 | A scope "does not exist" | The permissions above are missing or were added as Application permissions. |
