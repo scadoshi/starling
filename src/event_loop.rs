@@ -811,6 +811,17 @@ mod tests {
     }
 
     #[test]
+    fn shift_or_alt_enter_starts_a_new_line() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        event_loop.handle_key(&mut app, key(KeyCode::Char('i')));
+        event_loop.handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        event_loop.handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(app.input_buffer, "\n\n");
+        assert!(app.input_mode);
+        assert_eq!(event_loop.pending, []);
+    }
+
+    #[test]
     fn enter_on_an_empty_box_sends_nothing() {
         let (mut event_loop, mut app) = setup(&["a"]);
         event_loop.handle_key(&mut app, key(KeyCode::Char('i')));

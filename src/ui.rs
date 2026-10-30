@@ -365,7 +365,7 @@ fn draw_status(f: &mut Frame<'_>, app: &App, area: Rect) {
     let keys = if app.input_mode {
         hints(&[
             ("Enter", "send"),
-            ("Alt+Enter", "new line"),
+            ("Shift+Enter", "new line"),
             ("Esc", "cancel"),
         ])
     } else {

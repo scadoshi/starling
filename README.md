@@ -26,7 +26,7 @@ A `CLIENT_ID` environment variable overrides the saved client ID.
 | `PgDn` / `PgUp` or `J` / `K` | Scroll messages |
 | `i` | Compose |
 | `Enter` | Send |
-| `Alt+Enter` | New line |
+| `Shift+Enter` | New line (`Alt+Enter` in terminals that send Shift+Enter as Enter, such as Terminal.app) |
 | `Esc` | Cancel compose |
 | `n` | Cycle new-message notifications: none, terminal bell, desktop, both |
 | `q` | Quit |
