@@ -6,7 +6,8 @@ Guidance for Claude Code and any other AI assistant working in this repository.
 
 Starling is a terminal client for Microsoft Teams chats, built on [ratatui](https://ratatui.rs) and crossterm. It started as a fork of [nospor/teams-tui](https://github.com/nospor/teams-tui) (MIT, deprecated upstream) and diverges from it freely. The name is the bird: starlings fly in coordinated flocks and mimic what they hear.
 
-- One binary crate. `main.rs` runs the event loop, `ui.rs` draws, `app.rs` holds state, `api.rs` calls Microsoft Graph, `auth.rs` runs the OAuth device-code flow, `config.rs` loads `~/.config/starling/config.json`.
+- One binary crate. `main.rs` signs in, loads chats and owns the terminal; `event_loop.rs` applies background results and keys; `app.rs` holds UI state and the chat order; `ui.rs` draws; `message.rs` turns message HTML into plain text; `api.rs` calls Microsoft Graph; `auth.rs` runs the device-code flow; `config.rs` owns the config folder.
+- Event handlers never touch the network. They queue a `Request`, and `EventLoop::dispatch` spawns it. Tests drive the handlers and assert on the queue.
 - The UI stays on ratatui. Don't swap the TUI framework.
 
 ## Security Rules
@@ -15,7 +16,8 @@ These are why the fork exists. Non-negotiable:
 
 - Sign-in uses the OAuth device-code flow against the user's own Azure app registration (`AZURE_SETUP.md`). No borrowed first-party client IDs, no scraped session tokens, no unofficial Teams endpoints.
 - Network traffic goes to `login.microsoftonline.com` and `graph.microsoft.com` only.
-- Anything holding a token or profile is written through `config::write_private`, owner-only on Unix.
+- Anything holding a token or profile is written through `config::write_private`, owner-only on Unix, inside a folder created owner-only.
+- Text from the network goes through `message::sanitize` or `message::clean_text` before it is drawn, so it cannot carry a terminal escape sequence.
 - Tokens never reach stdout, stderr or a log.
 - Scopes stay at `User.Read Chat.ReadWrite offline_access`. A new scope needs a reason in the commit.
 
@@ -23,6 +25,7 @@ These are why the fork exists. Non-negotiable:
 
 ```bash
 cargo run                                          # needs a client ID in config.json or CLIENT_ID
+cargo audit                                        # what the weekly audit job runs
 cargo test
 cargo +nightly fmt                                 # rustfmt.toml uses unstable options
 cargo clippy --all-targets -- -D warnings          # what CI runs
@@ -30,7 +33,7 @@ cargo clippy --all-targets -- -D warnings          # what CI runs
 
 ## Linting
 
-`rustfmt.toml` and `clippy.toml` are the [scadoshi-rust](https://github.com/scadoshi/scadoshi-rust) files. The scadoshi-rust `[lints]` set is not in `Cargo.toml` yet: against the inherited code it raises about 190 hits, 38 of them string or slice indexing that can panic on multi-byte text. Adopting it is the next cleanup, one category per commit, ending with the block pasted into `Cargo.toml`. New code follows the set already: no `unwrap`, `expect` or indexing outside tests, and a suppression is `#[expect(lint, reason = "...")]`, never `#[allow]`.
+The [scadoshi-rust](https://github.com/scadoshi/scadoshi-rust) set: `[lints]` in `Cargo.toml`, plus its `clippy.toml` and `rustfmt.toml`. Pedantic clippy is on, and nothing may panic outside tests: `unwrap`, `expect`, `panic`, indexing and string slicing are denied, so string handling uses `split_once`, `strip_prefix` and `get`. Arithmetic is saturating or checked. A suppression is `#[expect(lint, reason = "...")]`, never `#[allow]`. CI treats warnings as errors.
 
 ## Commit Guidelines
 
