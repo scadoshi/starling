@@ -1,8 +1,8 @@
 //! Sign-in with the OAuth 2.0 device-code flow, and the saved token that keeps it.
 
-use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fmt, fs};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,10 @@ const EXPIRY_MARGIN_SECS: u64 = 300;
 /// Added to the poll interval each time the server answers `slow_down`, per RFC 8628.
 const SLOW_DOWN_SECS: u64 = 5;
 
-#[derive(Debug, Deserialize)]
+/// Stands in for a secret in `Debug` output.
+const REDACTED: &str = "<redacted>";
+
+#[derive(Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
     interval: u64,
@@ -27,7 +30,7 @@ struct DeviceCodeResponse {
     message: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct TokenResponse {
     access_token: String,
     token_type: String,
@@ -37,6 +40,33 @@ struct TokenResponse {
     /// Unix seconds. Zero in a response, set before saving.
     #[serde(default)]
     expires_at: u64,
+}
+
+/// Shows everything but the device code, which can be redeemed for a token.
+impl fmt::Debug for DeviceCodeResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceCodeResponse")
+            .field("device_code", &REDACTED)
+            .field("interval", &self.interval)
+            .field("message", &self.message)
+            .finish()
+    }
+}
+
+/// Shows the expiry and whether a refresh token is present, never the tokens.
+impl fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &REDACTED)
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| REDACTED),
+            )
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,4 +209,31 @@ pub(crate) async fn fetch_access_token() -> Result<String> {
 
     let token = poll_for_token(&device_code.device_code, device_code.interval).await?;
     Ok(token.access_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_hides_secrets() {
+        let token = TokenResponse {
+            access_token: "secret-access".to_owned(),
+            token_type: "Bearer".to_owned(),
+            expires_in: 3600,
+            refresh_token: Some("secret-refresh".to_owned()),
+            expires_at: 0,
+        };
+        let device = DeviceCodeResponse {
+            device_code: "secret-device".to_owned(),
+            interval: 5,
+            message: "go to example".to_owned(),
+        };
+        let shown = format!("{token:?} {device:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(
+            shown.contains("Bearer") && shown.contains("go to example"),
+            "{shown}"
+        );
+    }
 }
