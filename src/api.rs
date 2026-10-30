@@ -1,6 +1,5 @@
 //! Microsoft Graph calls: the signed-in user, chats, their members and messages.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -21,7 +20,11 @@ pub(crate) static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Cli
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct ChatMember {
+    /// The membership's ID, which differs from the user's.
     pub(crate) id: Option<String>,
+    /// The member's Entra user ID, the `id` that `/me` returns. Absent for members from outside the directory.
+    #[serde(rename = "userId")]
+    pub(crate) user_id: Option<String>,
     #[serde(rename = "displayName")]
     pub(crate) display_name: Option<String>,
     pub(crate) email: Option<String>,
@@ -245,51 +248,32 @@ pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) {
 }
 
 /// Every chat of the signed-in user, with members and a display name filled in.
+///
+/// The signed-in user is left out of each member list when their profile is available.
 pub(crate) async fn fetch_chats(access_token: &str) -> Result<Vec<Chat>> {
+    let my_id = fetch_me(access_token).await.ok().map(|user| user.id);
     let mut chats = fetch_json::<Page<Chat>>(access_token, "/me/chats")
         .await?
         .value;
 
     for chat in &mut chats {
-        chat.members =
+        let members =
             fetch_json::<Page<ChatMember>>(access_token, &format!("/chats/{}/members", chat.id))
                 .await
                 .map(|page| page.value)
                 .unwrap_or_default();
-    }
-
-    if let Some(me) = detect_current_user(&chats) {
-        for chat in &mut chats {
-            chat.members
-                .retain(|m| m.display_name.as_deref() != Some(me.as_str()));
-        }
-    }
-
-    for chat in &mut chats {
+        chat.members = others(members, my_id.as_deref());
         chat.display_name = message::sanitize(&display_name(chat));
     }
     Ok(chats)
 }
 
-/// Guesses the signed-in user as the member who appears in the most one-on-one chats.
-///
-/// Needs a single leader with two appearances, or one such chat. A tie gives no guess.
-fn detect_current_user(chats: &[Chat]) -> Option<String> {
-    let one_on_one: Vec<&Chat> = chats.iter().filter(|c| c.kind == "oneOnOne").collect();
-
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for member in one_on_one.iter().flat_map(|c| &c.members) {
-        if let Some(name) = member.display_name.as_deref() {
-            let count = counts.entry(name).or_default();
-            *count = count.saturating_add(1);
-        }
+/// `members` without the user with ID `my_id`.
+fn others(mut members: Vec<ChatMember>, my_id: Option<&str>) -> Vec<ChatMember> {
+    if let Some(my_id) = my_id {
+        members.retain(|m| m.user_id.as_deref() != Some(my_id));
     }
-
-    let top = counts.values().copied().max()?;
-    let mut leaders = counts.into_iter().filter(|&(_, count)| count == top);
-    let (name, _) = leaders.next()?;
-    let unique = leaders.next().is_none();
-    (unique && (top >= 2 || one_on_one.len() == 1)).then(|| name.to_owned())
+    members
 }
 
 /// The name for the chat list: the other person in a one-on-one, else the topic, else up to three members, else a placeholder.
@@ -344,6 +328,7 @@ mod tests {
     fn member(name: &str) -> ChatMember {
         ChatMember {
             id: None,
+            user_id: None,
             display_name: Some(name.to_owned()),
             email: None,
         }
@@ -398,24 +383,35 @@ mod tests {
     }
 
     #[test]
-    fn detect_current_user_needs_two_one_on_ones() {
-        let chats = [
-            chat_of("oneOnOne", None, &["Me", "Ann"]),
-            chat_of("oneOnOne", None, &["Me", "Bo"]),
-            chat_of("group", None, &["Ann", "Bo", "Cy"]),
-        ];
-        assert_eq!(detect_current_user(&chats).as_deref(), Some("Me"));
-        assert_eq!(detect_current_user(&chats[2..]), None);
+    fn others_drops_only_the_signed_in_user() {
+        let mut me = member("Sam Lee");
+        me.user_id = Some("me-id".to_owned());
+        let mut namesake = member("Sam Lee");
+        namesake.user_id = Some("other-id".to_owned());
+        let outside = member("Guest");
+
+        let kept: Vec<Option<String>> = others(vec![me, namesake, outside], Some("me-id"))
+            .into_iter()
+            .map(|m| m.user_id)
+            .collect();
+        assert_eq!(kept, [Some("other-id".to_owned()), None]);
     }
 
     #[test]
-    fn detect_current_user_does_not_guess_on_a_tie() {
-        let chats = [chat_of("oneOnOne", None, &["Me", "Ann"])];
-        for _ in 0..32 {
-            assert_eq!(detect_current_user(&chats), None);
-        }
-        let alone = [chat_of("oneOnOne", None, &["Me"])];
-        assert_eq!(detect_current_user(&alone).as_deref(), Some("Me"));
+    fn others_keeps_everyone_without_a_profile() {
+        assert_eq!(others(vec![member("A"), member("B")], None).len(), 2);
+    }
+
+    #[test]
+    fn members_parse_from_graph_json() {
+        let page: Page<ChatMember> = serde_json::from_str(
+            r##"{"value":[{"@odata.type":"#microsoft.graph.aadUserConversationMember","id":"MCMj","roles":["owner"],
+                "displayName":"Ada Lovelace","userId":"8b081ef6","email":"ada@example.com","tenantId":"t"}]}"##,
+        )
+        .unwrap();
+        let member = page.value.first().unwrap();
+        assert_eq!(member.user_id.as_deref(), Some("8b081ef6"));
+        assert_eq!(member.id.as_deref(), Some("MCMj"));
     }
 
     #[test]
