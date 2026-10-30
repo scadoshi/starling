@@ -98,7 +98,7 @@ fn get_profile_path() -> Result<PathBuf> {
 fn save_profile(user: &User) -> Result<()> {
     let path = get_profile_path()?;
     let json = serde_json::to_string_pretty(user)?;
-    fs::write(path, json)?;
+    crate::config::write_private(&path, &json)?;
     Ok(())
 }
 

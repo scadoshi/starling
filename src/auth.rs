@@ -64,7 +64,7 @@ fn get_token_path() -> Result<PathBuf> {
 fn save_token(token: &TokenResponse) -> Result<()> {
     let path = get_token_path()?;
     let json = serde_json::to_string_pretty(token)?;
-    fs::write(path, json)?;
+    crate::config::write_private(&path, &json)?;
     Ok(())
 }
 
