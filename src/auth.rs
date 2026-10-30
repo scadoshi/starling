@@ -6,23 +6,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 
 
-fn get_client_id() -> String {
-    // 1. Try env var
+fn get_client_id() -> Result<String> {
     dotenv::dotenv().ok();
     if let Ok(id) = std::env::var("CLIENT_ID") {
-        return id;
+        return Ok(id);
     }
 
-    // 2. Try config file
-    if let Some(config) = crate::config::load_config() {
-        if let Some(id) = config.client_id {
-            return id;
-        }
-    }
-
-    // 3. Fallback
-    eprintln!("Warning: CLIENT_ID not found in environment or config, using default fallback.");
-    "d3590ed6-52b3-4102-aeff-aad2292ab01c".to_string()
+    crate::config::load_config()
+        .and_then(|config| config.client_id)
+        .context("No client ID set. Put your Azure app's client ID in ~/.config/starling/config.json or CLIENT_ID; AZURE_SETUP.md has the steps")
 }
 
 const TENANT: &str = "common";
@@ -93,7 +85,7 @@ pub async fn start_device_flow() -> Result<DeviceCodeResponse> {
         TENANT
     );
 
-    let client_id = get_client_id();
+    let client_id = get_client_id()?;
     let params = [
         ("client_id", client_id.as_str()),
         ("scope", SCOPES),
@@ -131,7 +123,7 @@ pub async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenRes
         TENANT
     );
 
-    let client_id = get_client_id();
+    let client_id = get_client_id()?;
 
     loop {
         tokio::time::sleep(Duration::from_secs(interval)).await;
@@ -212,7 +204,7 @@ async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
         TENANT
     );
 
-    let client_id = get_client_id();
+    let client_id = get_client_id()?;
     let params = [
         ("grant_type", "refresh_token"),
         ("client_id", client_id.as_str()),
