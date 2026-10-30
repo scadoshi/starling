@@ -1,7 +1,8 @@
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 const GRAPH_API_BASE: &str = "https://graph.microsoft.com/v1.0";
 
@@ -87,13 +88,11 @@ pub struct User {
 }
 
 fn get_profile_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .context("Could not find config directory")?;
+    let config_dir = dirs::config_dir().context("Could not find config directory")?;
     let app_dir = config_dir.join(crate::config::APP_DIR_NAME);
     fs::create_dir_all(&app_dir)?;
     Ok(app_dir.join("profile.json"))
 }
-
 
 fn save_profile(user: &User) -> Result<()> {
     let path = get_profile_path()?;
@@ -134,12 +133,12 @@ pub async fn get_me(access_token: &str) -> Result<User> {
     }
 
     let user = response.json::<User>().await?;
-    
+
     // Save to cache
     if let Err(e) = save_profile(&user) {
         eprintln!("Warning: Failed to save profile cache: {}", e);
     }
-    
+
     Ok(user)
 }
 
@@ -236,7 +235,7 @@ pub async fn send_message(access_token: &str, chat_id: &str, content: &str) -> R
 
 /// Mark a chat as read for the current user
 /// This marks all messages in the chat as read
-/// 
+///
 /// Note: Microsoft Graph API may not support marking chat messages as read.
 /// This function attempts multiple endpoint variations but may silently fail.
 #[derive(Debug, Serialize)]
@@ -259,11 +258,11 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
             return Ok(());
         }
     };
-    
+
     // Get tenant ID from organization endpoint
     let client = reqwest::Client::new();
     let org_url = format!("{}/organization", GRAPH_API_BASE);
-    
+
     let tenant_id = match client
         .get(&org_url)
         .header("Authorization", format!("Bearer {}", access_token))
@@ -279,7 +278,7 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
             struct Org {
                 id: String,
             }
-            
+
             if let Ok(org_data) = org_response.json::<OrgResponse>().await {
                 org_data.value.first().map(|org| org.id.clone())
             } else {
@@ -288,14 +287,14 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
         }
         _ => None,
     };
-    
+
     let tenant_id = match tenant_id {
         Some(id) => id,
         None => {
             return Ok(());
         }
     };
-    
+
     // Mark chat as read using the working endpoint with user ID and tenant ID
     let url = format!("{}/chats/{}/markChatReadForUser", GRAPH_API_BASE, chat_id);
     let request_body = MarkChatReadRequest {
@@ -304,7 +303,7 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
             tenant_id: Some(tenant_id),
         },
     };
-    
+
     let _ = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", access_token))
@@ -312,7 +311,7 @@ pub async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Result<()> 
         .json(&request_body)
         .send()
         .await;
-    
+
     // Silently ignore errors to avoid disrupting the user experience
     Ok(())
 }
@@ -334,27 +333,28 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
     }
 
     let chats_response = response.json::<ChatsResponse>().await?;
-    
+
     // Process all chats (including meeting chats)
     let mut chats: Vec<Chat> = chats_response.value;
-    
+
     // Fetch members for each chat to get display names
     for chat in &mut chats {
-        chat.members = get_chat_members(access_token, &chat.id).await.unwrap_or_default();
+        chat.members = get_chat_members(access_token, &chat.id)
+            .await
+            .unwrap_or_default();
     }
-    
+
     // Detect the current user by finding the member that appears most frequently in oneOnOne chats
     // This member is most likely the current user
     let mut current_user_name: Option<String> = None;
-    
-    let one_on_one_chats: Vec<&Chat> = chats.iter()
-        .filter(|c| c.chat_type == "oneOnOne")
-        .collect();
-    
+
+    let one_on_one_chats: Vec<&Chat> = chats.iter().filter(|c| c.chat_type == "oneOnOne").collect();
+
     if !one_on_one_chats.is_empty() {
         // Count how many times each member NAME appears
-        let mut name_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        
+        let mut name_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
         for chat in &one_on_one_chats {
             for member in &chat.members {
                 if let Some(name) = &member.display_name {
@@ -362,11 +362,9 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                 }
             }
         }
-        
+
         // Find the member that appears most frequently (should be the current user)
-        if let Some((name, count)) = name_counts.iter()
-            .max_by_key(|(_, count)| *count) {
-            
+        if let Some((name, count)) = name_counts.iter().max_by_key(|(_, count)| *count) {
             // Only consider it the current user if they appear in at least 2 chats
             // or if there's only 1 oneOnOne chat
             if *count >= 2 || one_on_one_chats.len() == 1 {
@@ -374,22 +372,24 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
             }
         }
     }
-    
+
     // Now filter out the current user from all chats by name
     if let Some(user_name) = &current_user_name {
         for chat in &mut chats {
             chat.members.retain(|m| {
-                m.display_name.as_ref().map(|name| name != user_name).unwrap_or(true)
+                m.display_name
+                    .as_ref()
+                    .map(|name| name != user_name)
+                    .unwrap_or(true)
             });
         }
     }
-    
+
     // Compute display names for all chats
     for chat in &mut chats {
         chat.cached_display_name = if chat.chat_type == "oneOnOne" {
             // For oneOnOne, use the first member's name
-            chat.members.first()
-                .and_then(|m| m.display_name.clone())
+            chat.members.first().and_then(|m| m.display_name.clone())
         } else if chat.chat_type == "group" || chat.chat_type == "meeting" {
             // For group and meeting chats, prefer topic, otherwise show member names
             if let Some(topic) = &chat.topic {
@@ -397,12 +397,13 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                     Some(topic.clone())
                 } else {
                     // Show up to 3 member names (abbreviated)
-                    let names: Vec<String> = chat.members
+                    let names: Vec<String> = chat
+                        .members
                         .iter()
                         .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
                         .take(3)
                         .collect();
-                    
+
                     if !names.is_empty() {
                         Some(names.join(", "))
                     } else {
@@ -416,12 +417,13 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                 }
             } else {
                 // No topic - show member names (abbreviated)
-                let names: Vec<String> = chat.members
+                let names: Vec<String> = chat
+                    .members
                     .iter()
                     .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
                     .take(3)
                     .collect();
-                
+
                 if !names.is_empty() {
                     Some(names.join(", "))
                 } else {
@@ -440,12 +442,13 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                     Some(topic.clone())
                 } else {
                     // Try member names
-                    let names: Vec<String> = chat.members
+                    let names: Vec<String> = chat
+                        .members
                         .iter()
                         .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
                         .take(3)
                         .collect();
-                    
+
                     if !names.is_empty() {
                         Some(names.join(", "))
                     } else {
@@ -454,12 +457,13 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
                 }
             } else {
                 // Try member names
-                let names: Vec<String> = chat.members
+                let names: Vec<String> = chat
+                    .members
                     .iter()
                     .filter_map(|m| m.display_name.as_ref().map(|n| abbreviate_name(n)))
                     .take(3)
                     .collect();
-                
+
                 if !names.is_empty() {
                     Some(names.join(", "))
                 } else {
@@ -468,6 +472,6 @@ pub async fn get_chats(access_token: &str) -> Result<(Vec<Chat>, Option<String>)
             }
         };
     }
-    
+
     Ok((chats, current_user_name))
 }

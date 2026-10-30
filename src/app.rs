@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
-use crate::api::{Chat, Message};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+use crate::api::{Chat, Message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum NotificationMode {

@@ -1,10 +1,12 @@
 pub const APP_DIR_NAME: &str = "starling";
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
 use crate::app::NotificationMode;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -14,8 +16,7 @@ pub struct Config {
 }
 
 pub fn get_app_dir() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .context("Could not find config directory")?;
+    let config_dir = dirs::config_dir().context("Could not find config directory")?;
     let app_dir = config_dir.join(APP_DIR_NAME);
     fs::create_dir_all(&app_dir)?;
     Ok(app_dir)
@@ -42,11 +43,11 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
 pub fn load_config() -> Option<Config> {
     let app_dir = get_app_dir().ok()?;
     let config_path = app_dir.join("config.json");
-    
+
     if !config_path.exists() {
         return None;
     }
-    
+
     let json = fs::read_to_string(config_path).ok()?;
     serde_json::from_str(&json).ok()
 }

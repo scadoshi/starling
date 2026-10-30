@@ -1,30 +1,32 @@
-mod app;
-mod ui;
-mod auth;
 mod api;
+mod app;
+mod auth;
 pub mod config;
+mod ui;
 
-use std::io::{self, Write};
 use std::collections::HashMap;
+use std::io::{self, Write};
+
 use anyhow::Result;
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crate::app::{App, NotificationMode};
 use notify_rust::Notification;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+
+use crate::app::{App, NotificationMode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Authenticate first (before setting up terminal)
     println!("Starling");
     println!("================================\n");
-    
+
     let access_token = match auth::get_access_token().await {
         Ok(token) => {
             println!("✓ Authentication successful!\n");
@@ -61,42 +63,42 @@ async fn main() -> Result<()> {
             return Err(e);
         }
     };
-    
+
     // Load last message for each chat in parallel to get accurate sorting by actual message time
     println!("Loading last messages for accurate sorting...");
     let mut chat_last_message_times: HashMap<String, String> = HashMap::new();
-    
+
     // Spawn tasks to load messages for all chats in parallel
     let mut tasks = Vec::new();
     for chat in &chats {
         let chat_id = chat.id.clone();
         let token = access_token.clone();
         tasks.push(tokio::spawn(async move {
-        if let Ok(messages) = api::get_messages(&token, &chat_id).await {
-            if messages.is_empty() {
-                None
-            } else {
-                // Messages are returned in chronological order (oldest first) based on UI code using .rev()
-                // So the last message in the array is the most recent
-                // But let's be safe and compare first vs last to get the most recent
-                let first = messages.first().unwrap();
-                let last = messages.last().unwrap();
-                
-                // Use whichever is more recent (later timestamp)
-                let most_recent = if last.created_date_time > first.created_date_time {
-                    last
+            if let Ok(messages) = api::get_messages(&token, &chat_id).await {
+                if messages.is_empty() {
+                    None
                 } else {
-                    first
-                };
-                
-                Some((chat_id, most_recent.created_date_time.clone()))
+                    // Messages are returned in chronological order (oldest first) based on UI code using .rev()
+                    // So the last message in the array is the most recent
+                    // But let's be safe and compare first vs last to get the most recent
+                    let first = messages.first().unwrap();
+                    let last = messages.last().unwrap();
+
+                    // Use whichever is more recent (later timestamp)
+                    let most_recent = if last.created_date_time > first.created_date_time {
+                        last
+                    } else {
+                        first
+                    };
+
+                    Some((chat_id, most_recent.created_date_time.clone()))
+                }
+            } else {
+                None
             }
-        } else {
-            None
-        }
         }));
     }
-    
+
     // Wait for all tasks to complete
     let mut loaded_count = 0;
     for task in tasks {
@@ -105,22 +107,22 @@ async fn main() -> Result<()> {
             loaded_count += 1;
         }
     }
-    
+
     println!("Loaded messages for {}/{} chats", loaded_count, chats.len());
-    
+
     // Sort chats by actual last message time (most recent first)
     // Chats with messages come first, sorted by message time
     // Chats without messages come after, sorted by lastUpdatedDateTime
     chats.sort_by(|a, b| {
         let a_time = chat_last_message_times.get(&a.id);
         let b_time = chat_last_message_times.get(&b.id);
-        
+
         match (a_time, b_time) {
             (Some(a_t), Some(b_t)) => {
                 // Both have messages - compare timestamps (most recent first)
                 // Timestamps are in ISO 8601 format, so string comparison works
                 b_t.cmp(a_t)
-            },
+            }
             (Some(_), None) => std::cmp::Ordering::Less, // a has messages, b doesn't - a comes first
             (None, Some(_)) => std::cmp::Ordering::Greater, // b has messages, a doesn't - b comes first
             (None, None) => {
@@ -134,7 +136,7 @@ async fn main() -> Result<()> {
             }
         }
     });
-    
+
     println!("✓ Sorted {} chats by last message time\n", chats.len());
 
     // Setup terminal
@@ -150,7 +152,7 @@ async fn main() -> Result<()> {
     if let Some(user) = current_user {
         app.set_current_user(user.display_name);
     }
-    
+
     // Load config and apply notification mode
     if let Some(config) = crate::config::load_config() {
         if let Some(mode) = config.notification_mode {
@@ -159,7 +161,13 @@ async fn main() -> Result<()> {
     }
 
     // Run app (pass the initial message times we loaded and access token for background tasks)
-    let res = run_app(&mut terminal, &mut app, chat_last_message_times, access_token).await;
+    let res = run_app(
+        &mut terminal,
+        &mut app,
+        chat_last_message_times,
+        access_token,
+    )
+    .await;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -177,26 +185,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App, mut chat_last_message_times: HashMap<String, String>, _initial_access_token: String) -> Result<()> {
+async fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    mut chat_last_message_times: HashMap<String, String>,
+    _initial_access_token: String,
+) -> Result<()> {
     // Create a channel for receiving loaded messages
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Vec<api::Message>)>();
-    
+
     // Create a channel for receiving chat updates
-    let (tx_chats, mut rx_chats) = tokio::sync::mpsc::unbounded_channel::<(Vec<api::Chat>, Option<String>)>();
-    
+    let (tx_chats, mut rx_chats) =
+        tokio::sync::mpsc::unbounded_channel::<(Vec<api::Chat>, Option<String>)>();
+
     // Create a channel for new message notifications (chat_id, last_message)
-    let (tx_new_messages, mut rx_new_messages) = tokio::sync::mpsc::unbounded_channel::<(String, api::Message)>();
-    
+    let (tx_new_messages, mut rx_new_messages) =
+        tokio::sync::mpsc::unbounded_channel::<(String, api::Message)>();
+
     // Store the latest chat list from API for use when reordering
     let mut latest_chats_from_api: Option<Vec<api::Chat>> = None;
-    
+
     // Track last message ID per chat to detect actual new messages
     // Maps chat_id -> last_message_id
     let mut chat_last_message_ids: HashMap<String, String> = HashMap::new();
-    
+
     // chat_last_message_times is passed in from initial load
     // stable_chat_order is initialized from the correctly sorted initial load
-    
+
     // Store the stable order of chats (by chat ID) to prevent reordering
     // This is initialized from the correctly sorted initial load
     // We preserve this order on refresh and only reorder when new messages are detected
@@ -216,16 +231,16 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
             }
         }
     });
-    
+
     let mut last_selected_chat_id: Option<String> = None;
     let mut message_refresh_counter = 0u32;
-    
+
     // Load messages for the first chat if available
     if let Some(chat) = app.get_selected_chat() {
         let chat_id = chat.id.clone();
         let chat_index = app.selected_index;
         let tx_clone = tx.clone();
-        
+
         app.set_loading_messages(true);
         tokio::spawn(async move {
             if let Ok(token) = auth::get_valid_token_silent().await {
@@ -235,13 +250,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
             }
         });
     }
-    
+
     loop {
         // Check for chat updates
         while let Ok((chats_from_api, _)) = rx_chats.try_recv() {
             // Store latest chats for use when reordering after new message detection
             latest_chats_from_api = Some(chats_from_api.clone());
-            
+
             // Preserve selection by chat ID (not index, since order may change)
             let old_index = app.selected_index;
             let current_chat_id = if old_index < app.chats.len() {
@@ -249,21 +264,21 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
             } else {
                 None
             };
-            
+
             // Check ALL chats for new messages by loading their last message
             // We need to check all chats because lastUpdatedDateTime can change when marked as read,
             // so we can't rely on it alone. Instead, we'll load the last message and compare IDs.
             let current_selected_chat_id = app.get_selected_chat().map(|c| c.id.clone());
-            
+
             for chat in &chats_from_api {
                 // Skip the currently selected chat - it's handled separately
                 if Some(&chat.id) == current_selected_chat_id.as_ref() {
                     continue;
                 }
-                
+
                 let tx_new_clone = tx_new_messages.clone();
                 let chat_id_clone = chat.id.clone();
-                
+
                 // Load last message for this chat to check if there's a new one
                 tokio::spawn(async move {
                     if let Ok(token) = auth::get_valid_token_silent().await {
@@ -276,7 +291,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     }
                 });
             }
-            
+
             // Add any new chats (chats not in stable order) to stable_chat_order
             // If they already have message times (detected as new), add them at the top
             // Otherwise, add them at the end
@@ -291,7 +306,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     }
                 }
             }
-            
+
             // Rebuild chat list based on stable_chat_order (which has new chats with messages at top)
             let mut reordered_chats = Vec::new();
             for chat_id in &stable_chat_order {
@@ -299,9 +314,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     reordered_chats.push(chat.clone());
                 }
             }
-            
+
             app.set_chats(reordered_chats);
-            
+
             // Restore selection by finding the chat by ID
             if let Some(id) = current_chat_id {
                 if let Some(new_index) = app.chats.iter().position(|c| c.id == id) {
@@ -318,13 +333,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     app.selected_index = app.chats.len().saturating_sub(1);
                 }
             }
-            
+
             // Refresh messages for the currently selected chat to get new messages
             if let Some(chat) = app.get_selected_chat() {
                 let chat_id = chat.id.clone();
                 let chat_index = app.selected_index;
                 let tx_clone = tx.clone();
-                
+
                 tokio::spawn(async move {
                     if let Ok(token) = auth::get_valid_token_silent().await {
                         if let Ok(messages) = api::get_messages(&token, &chat_id).await {
@@ -334,10 +349,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                 });
             }
         }
-        
+
         // Periodically refresh messages for the currently selected chat (every ~3 seconds)
         message_refresh_counter += 1;
-        if message_refresh_counter >= 30 { // 30 * 100ms = 3 seconds
+        if message_refresh_counter >= 30 {
+            // 30 * 100ms = 3 seconds
             message_refresh_counter = 0;
             if let Some(chat) = app.get_selected_chat() {
                 let current_chat_id = chat.id.clone();
@@ -346,7 +362,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     let chat_id = current_chat_id.clone();
                     let chat_index = app.selected_index;
                     let tx_clone = tx.clone();
-                    
+
                     tokio::spawn(async move {
                         if let Ok(token) = auth::get_valid_token_silent().await {
                             if let Ok(messages) = api::get_messages(&token, &chat_id).await {
@@ -370,15 +386,17 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                 // If it's not, it's a brand new chat that should go to top
                 !stable_chat_order.contains(&chat_id)
             };
-            
+
             if is_new_message {
                 // Trigger notification based on mode
-                let sender = last_msg.from.as_ref()
+                let sender = last_msg
+                    .from
+                    .as_ref()
                     .and_then(|f| f.user.as_ref())
                     .and_then(|u| u.display_name.as_ref())
                     .map(|s| s.as_str())
                     .unwrap_or("Unknown");
-                
+
                 let should_notify = match app.notification_mode {
                     NotificationMode::None => false,
                     NotificationMode::Console => true,
@@ -389,12 +407,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                 if should_notify {
                     let mode = app.notification_mode;
                     let body = format!("New message from {}", sender);
-                    
+
                     // console notification
                     if mode == NotificationMode::Console || mode == NotificationMode::Both {
                         print!("\x07"); // BEL
                         let _ = io::stdout().flush();
-                        app.visual_bell_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
+                        app.visual_bell_until =
+                            Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
                     }
 
                     // system notification
@@ -414,11 +433,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     stable_chat_order.remove(pos);
                 }
                 stable_chat_order.insert(0, chat_id.clone());
-                
+
                 // Update message ID and time
                 chat_last_message_ids.insert(chat_id.clone(), last_msg.id.clone());
                 chat_last_message_times.insert(chat_id.clone(), last_msg.created_date_time.clone());
-                
+
                 // Always trigger a chat list refresh to get latest data, then reorder
                 // This ensures the chat list updates immediately when a new message is detected
                 let tx_chats_refresh = tx_chats.clone();
@@ -429,7 +448,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                         }
                     }
                 });
-                
+
                 // Also reorder immediately with current data (will be updated again when refresh completes)
                 let chats_to_use = latest_chats_from_api.as_ref().unwrap_or(&app.chats);
                 let mut reordered = Vec::new();
@@ -445,7 +464,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     }
                 }
                 app.set_chats(reordered);
-                
+
                 // Preserve selection if it changed
                 if let Some(current_chat) = app.get_selected_chat() {
                     let current_id = current_chat.id.clone();
@@ -459,7 +478,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                 chat_last_message_times.insert(chat_id, last_msg.created_date_time.clone());
             }
         }
-        
+
         // Check for loaded messages (non-blocking)
         while let Ok((chat_index, messages)) = rx.try_recv() {
             // Only update if we're still on the same chat
@@ -478,35 +497,39 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
 
                 if should_update {
                     let chat_id = app.chats[chat_index].id.clone();
-                    
+
                     // Check if this is a new message (different from last known)
                     if let Some(last_msg) = messages.last() {
-                        let is_new = chat_last_message_ids.get(&chat_id)
+                        let is_new = chat_last_message_ids
+                            .get(&chat_id)
                             .map(|old_id| old_id != &last_msg.id)
                             .unwrap_or(false); // First time seeing messages = not new (just loading)
-                        
+
                         // Update last message ID and time
                         chat_last_message_ids.insert(chat_id.clone(), last_msg.id.clone());
-                        chat_last_message_times.insert(chat_id.clone(), last_msg.created_date_time.clone());
-                        
+                        chat_last_message_times
+                            .insert(chat_id.clone(), last_msg.created_date_time.clone());
+
                         // If new message detected, move chat to top of stable order
                         if is_new {
-                            if let Some(pos) = stable_chat_order.iter().position(|id| id == &chat_id) {
+                            if let Some(pos) =
+                                stable_chat_order.iter().position(|id| id == &chat_id)
+                            {
                                 stable_chat_order.remove(pos);
                                 stable_chat_order.insert(0, chat_id);
                             }
                         }
                     }
-                    
+
                     app.set_messages(messages.clone());
                     app.snap_to_bottom = true;
                 }
-                
+
                 // Always mark the chat as read when we're viewing it (regardless of message updates)
                 // This ensures chats are marked as read even if messages haven't changed
                 if let Some(chat) = app.get_selected_chat() {
                     let chat_id = chat.id.clone();
-                    
+
                     tokio::spawn(async move {
                         if let Ok(token) = auth::get_valid_token_silent().await {
                             let _ = api::mark_chat_as_read(&token, &chat_id).await;
@@ -515,14 +538,14 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                 }
             }
         }
-        
+
         terminal.draw(|f| ui::draw(f, app))?;
 
         // Use poll with timeout to allow checking for messages
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 let previous_index = app.selected_index;
-                
+
                 match key.code {
                     KeyCode::Char('q') if !app.input_mode => return Ok(()),
                     KeyCode::Down | KeyCode::Char('j') if !app.input_mode => app.next_chat(),
@@ -543,7 +566,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                         app.input_buffer.clear();
                     }
                     // Handle Alt+Enter for newline (most reliable method)
-                    KeyCode::Enter if app.input_mode && key.modifiers.contains(KeyModifiers::ALT) => {
+                    KeyCode::Enter
+                        if app.input_mode && key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
                         // Alt+Enter = new line
                         app.input_buffer.push('\n');
                     }
@@ -551,7 +576,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                         // Check for Shift or Ctrl modifiers (may not work in all terminals)
                         let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
                         let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                        
+
                         if has_shift || has_ctrl {
                             // Shift+Enter or Ctrl+Enter = new line
                             app.input_buffer.push('\n');
@@ -561,28 +586,35 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                                 let message = app.input_buffer.clone();
                                 app.input_buffer.clear();
                                 app.input_mode = false;
-                                
+
                                 // Send message logic
                                 if let Some(chat) = app.get_selected_chat() {
                                     let chat_id = chat.id.clone();
                                     let chat_index = app.selected_index;
                                     let tx = tx.clone();
                                     let tx_chats = tx_chats.clone(); // Clone for refresh
-                                    
+
                                     tokio::spawn(async move {
                                         if let Ok(token) = auth::get_valid_token_silent().await {
-                                            match api::send_message(&token, &chat_id, &message).await {
+                                            match api::send_message(&token, &chat_id, &message)
+                                                .await
+                                            {
                                                 Ok(_) => {
                                                     // Reload messages
-                                                    if let Ok(messages) = api::get_messages(&token, &chat_id).await {
+                                                    if let Ok(messages) =
+                                                        api::get_messages(&token, &chat_id).await
+                                                    {
                                                         let _ = tx.send((chat_index, messages));
                                                     }
                                                     // Refresh chat list to update last message preview
-                                                    if let Ok(chats) = api::get_chats(&token).await {
+                                                    if let Ok(chats) = api::get_chats(&token).await
+                                                    {
                                                         let _ = tx_chats.send(chats);
                                                     }
                                                 }
-                                                Err(e) => eprintln!("Failed to send message: {}", e),
+                                                Err(e) => {
+                                                    eprintln!("Failed to send message: {}", e)
+                                                }
                                             }
                                         }
                                     });
@@ -616,11 +648,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                         let chat_id = chat.id.clone();
                         let chat_index = app.selected_index;
                         let tx_clone = tx.clone();
-                        
+
                         app.set_loading_messages(true);
                         app.set_messages(Vec::new()); // Clear old messages immediately
                         app.snap_to_bottom = true; // Snap to bottom for new chat
-                        
+
                         tokio::spawn(async move {
                             if let Ok(token) = auth::get_valid_token_silent().await {
                                 if let Ok(messages) = api::get_messages(&token, &chat_id).await {

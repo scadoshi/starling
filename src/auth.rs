@@ -1,10 +1,9 @@
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 fn get_client_id() -> Result<String> {
     dotenv::dotenv().ok();
@@ -46,8 +45,7 @@ struct TokenErrorResponse {
 }
 
 fn get_token_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .context("Could not find config directory")?;
+    let config_dir = dirs::config_dir().context("Could not find config directory")?;
     let app_dir = config_dir.join(crate::config::APP_DIR_NAME);
     fs::create_dir_all(&app_dir)?;
     Ok(app_dir.join("token.json"))
@@ -65,16 +63,16 @@ fn load_token() -> Result<Option<TokenResponse>> {
     if !path.exists() {
         return Ok(None);
     }
-    
+
     let json = fs::read_to_string(path)?;
     let mut token: TokenResponse = serde_json::from_str(&json)?;
-    
+
     // Set expires_at based on current time if not set
     if token.expires_at == 0 {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         token.expires_at = now + token.expires_in;
     }
-    
+
     Ok(Some(token))
 }
 
@@ -86,16 +84,9 @@ pub async fn start_device_flow() -> Result<DeviceCodeResponse> {
     );
 
     let client_id = get_client_id()?;
-    let params = [
-        ("client_id", client_id.as_str()),
-        ("scope", SCOPES),
-    ];
+    let params = [("client_id", client_id.as_str()), ("scope", SCOPES)];
 
-    let response = client
-        .post(&url)
-        .form(&params)
-        .send()
-        .await?;
+    let response = client.post(&url).form(&params).send().await?;
 
     // Check if the request was successful
     if !response.status().is_success() {
@@ -134,11 +125,7 @@ pub async fn poll_for_token(device_code: &str, interval: u64) -> Result<TokenRes
             ("device_code", device_code),
         ];
 
-        let response = client
-            .post(&url)
-            .form(&params)
-            .send()
-            .await?;
+        let response = client.post(&url).form(&params).send().await?;
 
         if response.status().is_success() {
             let mut token = response.json::<TokenResponse>().await?;
@@ -166,12 +153,12 @@ pub async fn get_valid_token_silent() -> Result<String> {
     // Try to load existing token
     if let Some(token) = load_token()? {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        
+
         // If token is still valid (with 5 min buffer), return it
         if token.expires_at > now + 300 {
             return Ok(token.access_token);
         }
-        
+
         // Try to refresh if we have a refresh token
         if let Some(refresh_token) = token.refresh_token {
             if let Ok(new_token) = refresh_access_token(&refresh_token).await {
@@ -192,8 +179,12 @@ pub async fn get_access_token() -> Result<String> {
     let device_code_response = start_device_flow().await?;
     println!("\n{}", device_code_response.message);
     println!("\nWaiting for authentication...\n");
-    
-    let token = poll_for_token(&device_code_response.device_code, device_code_response.interval).await?;
+
+    let token = poll_for_token(
+        &device_code_response.device_code,
+        device_code_response.interval,
+    )
+    .await?;
     Ok(token.access_token)
 }
 
@@ -212,11 +203,7 @@ async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
         ("scope", SCOPES),
     ];
 
-    let response = client
-        .post(&url)
-        .form(&params)
-        .send()
-        .await?;
+    let response = client.post(&url).form(&params).send().await?;
 
     if response.status().is_success() {
         let mut token = response.json::<TokenResponse>().await?;
