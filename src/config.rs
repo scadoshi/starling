@@ -1,4 +1,4 @@
-pub const APP_DIR_NAME: &str = "teams-tui";
+pub const APP_DIR_NAME: &str = "starling";
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

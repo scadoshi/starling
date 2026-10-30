@@ -16,7 +16,7 @@ Open your browser and navigate to:
 1. In the left sidebar, navigate to: **Identity** → **Applications** → **App registrations**
 2. Click **+ New registration**
 3. Fill in the form:
-   - **Name**: `Teams TUI Client` (or any name you prefer)
+   - **Name**: `Starling` (or any name you prefer)
    - **Supported account types**: Select **"Accounts in any organizational directory and personal Microsoft accounts"**
    - **Redirect URI**: Leave this **blank** (device code flow doesn't need it)
 4. Click **Register**
@@ -74,7 +74,7 @@ If you get this error, you're missing the `User.Read` permission:
 1. Go to **API permissions** in Azure Portal
 2. Click **+ Add a permission** → **Microsoft Graph** → **Delegated permissions**
 3. Search for and add `User.Read`
-4. **Delete your saved token**: `rm ~/.config/teams-tui/token.json`
+4. **Delete your saved token**: `rm ~/.config/starling/token.json`
 5. Run the app again and re-authenticate
 
 ### 6. Update Your Application

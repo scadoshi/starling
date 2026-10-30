@@ -1,5 +1,5 @@
 [package]
-name = "teams-tui"
+name = "starling"
 version = "0.1.0"
 edition = "2021"
 

@@ -22,7 +22,7 @@ use notify_rust::Notification;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Authenticate first (before setting up terminal)
-    println!("TeamsTUI");
+    println!("Starling");
     println!("================================\n");
     
     let access_token = match auth::get_access_token().await {
@@ -401,9 +401,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     if mode == NotificationMode::System || mode == NotificationMode::Both {
                         tokio::spawn(async move {
                             let _ = Notification::new()
-                                .summary("TeamsTUI")
+                                .summary("Starling")
                                 .body(&body)
-                                .appname("TeamsTUI")
+                                .appname("Starling")
                                 .show();
                         });
                     }

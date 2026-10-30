@@ -1,12 +1,9 @@
-# TeamsTUI
+# Starling
 
-> [!WARNING]
-> This project is deprecated. A new version written in Go is available at [https://github.com/nospor/teams-tui-go](https://github.com/nospor/teams-tui-go).
-
-A Rust-based Terminal User Interface (TUI) for Microsoft Teams, built around keyboard-driven navigation.  
+A terminal client for Microsoft Teams chats, written in Rust with [ratatui](https://ratatui.rs), built around keyboard-driven navigation.  
 Use arrow keys (or h/j) to switch chats, press *i* to enter message-input mode, and enjoy a fast, distraction-free Teams experience inside the terminal.
 
-![TeamsTUI](assets/images/tt.png)
+![Starling](assets/images/tt.png)
 
 ## Features
 
@@ -31,7 +28,7 @@ Follow the detailed guide in [AZURE_SETUP.md](AZURE_SETUP.md) to:
 ### 2. Configure the App
 
 #### 2.1. Using `config.json`
-Create a `config.json` file in `~/.config/teams-tui/` directory:
+Create a `config.json` file in `~/.config/starling/` directory:
 ```json
 {
   "client_id": "your-client-id-here"
@@ -57,12 +54,12 @@ cargo run
 
 # Or build and run the binary
 cargo build --release
-./target/release/teams-tui
+./target/release/starling
 
 # you can also copy binary wherever you want, eg
-cp ./target/release/teams-tui /usr/local/bin/teams-tui
+cp ./target/release/starling /usr/local/bin/starling
 # and run from anywhere
-teams-tui
+starling
 ```
 **Imoportant:** If you use `.env` file, make sure to run the app from the same directory where `.env` is located (still preferred way is to use `config.json` for settings).
 
@@ -95,9 +92,9 @@ This app uses:
 - **Ratatui** for the terminal UI
 - **OAuth2 Device Code Flow** for authentication
 
-Tokens are saved to `~/.config/teams-tui/token.json` and automatically refreshed.
+Tokens are saved to `~/.config/starling/token.json` and automatically refreshed.
 
-Your profile is saved to `~/.config/teams-tui/profile.json` (limits API calls).
+Your profile is saved to `~/.config/starling/profile.json` (limits API calls).
 
 If at some point you want/need to re-authenticate, just delete the `token.json` file (and eventually `profile.json`).
 
@@ -109,7 +106,8 @@ If at some point you want/need to re-authenticate, just delete the `token.json` 
 
 ## License
 
-TeamsTUI is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+Starling is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
-## Thanks For Visiting
-Hope you liked it. Wanna **[buy Me a coffee](https://www.buymeacoffee.com/nospor)**?
+## Credits
+
+Starling started as a fork of [nospor/teams-tui](https://github.com/nospor/teams-tui) by nospor, who wrote the original client.
