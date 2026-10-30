@@ -6,9 +6,10 @@ Guidance for Claude Code and any other AI assistant working in this repository.
 
 Starling is a terminal client for Microsoft Teams chats, built on [ratatui](https://ratatui.rs) and crossterm. It started as a fork of [nospor/teams-tui](https://github.com/nospor/teams-tui) (MIT, deprecated upstream) and diverges from it freely. The name is the bird: starlings fly in coordinated flocks and mimic what they hear.
 
-- One binary crate. `main.rs` signs in, loads chats and owns the terminal; `event_loop.rs` applies background results and keys; `app.rs` holds UI state and the chat order; `ui.rs` draws; `message.rs` turns message HTML into plain text; `api.rs` calls Microsoft Graph; `auth.rs` runs the device-code flow; `config.rs` owns the config folder.
+- One binary crate. `main.rs` sets up the terminal; `event_loop.rs` runs sign-in, loading and the chat screen, applying background results and keys; `app.rs` holds UI state and the chat order; `ui.rs` draws; `message.rs` turns message HTML into plain text; `api.rs` calls Microsoft Graph; `auth.rs` runs the device-code flow; `config.rs` owns the config folder.
 - Event handlers never touch the network. They queue a `Request`, and `EventLoop::dispatch` spawns it. Tests drive the handlers and assert on the queue.
-- The UI stays on ratatui. Don't swap the TUI framework.
+- The UI stays on ratatui. Don't swap the TUI framework. `development/ratatui.md` has the patterns and styling rules.
+- Everything after launch happens in the TUI, sign-in included. Nothing prints to stdout.
 
 ## Security Rules
 
@@ -24,7 +25,7 @@ These are why the fork exists. Non-negotiable:
 ## Common Commands
 
 ```bash
-cargo run                                          # needs a client ID in config.json or CLIENT_ID
+cargo run                                          # asks for a client ID on first run
 cargo audit                                        # what the weekly audit job runs
 cargo test
 cargo +nightly fmt                                 # rustfmt.toml uses unstable options

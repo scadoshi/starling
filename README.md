@@ -7,21 +7,16 @@ Starling signs in with Microsoft's device-code flow against an Azure app you reg
 ## Setup
 
 1. Register an Azure app and copy its client ID. [AZURE_SETUP.md](AZURE_SETUP.md) walks through it. If your organization blocks app registrations, your IT admin has to do this step.
-2. Put the client ID in `config.json` in Starling's config folder: `~/Library/Application Support/starling/` on macOS, `~/.config/starling/` on Linux.
-
-   ```json
-   { "client_id": "your-client-id" }
-   ```
-
-   A `CLIENT_ID` environment variable, or a `.env` file in the directory you run from, works too and takes precedence.
-3. Install and run:
+2. Install and run:
 
    ```bash
    cargo install --git https://github.com/scadoshi/starling
    starling
    ```
 
-The first run prints a URL and a code. Open the URL, enter the code, and sign in. The token is saved and refreshed after that.
+3. Paste the client ID when Starling asks for it. It shows a URL and a code: open the URL on any device, enter the code, and sign in. Both the client ID and the sign-in are saved, so later runs go straight to your chats.
+
+A `CLIENT_ID` environment variable overrides the saved client ID.
 
 ## Keys
 
@@ -35,10 +30,11 @@ The first run prints a URL and a code. Open the URL, enter the code, and sign in
 | `Esc` | Cancel compose |
 | `n` | Cycle new-message notifications: none, terminal bell, desktop, both |
 | `q` | Quit |
+| `Ctrl+C` | Quit from any screen |
 
 ## Files
 
-The config folder holds `config.json`, `token.json` and `profile.json`, all readable by your user only. Delete `token.json` to sign in again, and `profile.json` too if you switch accounts.
+The config folder is `~/Library/Application Support/starling/` on macOS and `~/.config/starling/` on Linux. It holds `config.json`, `token.json` and `profile.json`, all readable by your user only. Delete `token.json` to sign in again, and `profile.json` too if you switch accounts.
 
 ## Development
 

@@ -75,17 +75,13 @@ If you get this error, you're missing the `User.Read` permission:
 4. **Delete your saved token**: `rm ~/.config/starling/token.json` on Linux, `rm ~/Library/Application\ Support/starling/token.json` on macOS
 5. Run the app again and re-authenticate
 
-### 6. Update Your Application
-
-See the **README.md** for instructions on setting the Client ID (Quick Start, point 2).
-
-### 7. Run the Application
+### 6. Run Starling
 
 ```bash
 starling
 ```
 
-Now the authentication should work!
+Paste the client ID when it asks, then follow the sign-in code it shows.
 
 ## Troubleshooting
 

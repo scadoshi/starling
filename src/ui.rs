@@ -1,14 +1,14 @@
-//! Draws the chat list, the message view, the compose box and the status bar.
+//! Draws whichever screen is up: the client ID prompt, sign-in, loading, or the chats.
 
 use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
 use crate::api::Message;
-use crate::app::App;
+use crate::app::{App, Screen, SignInCode};
 use crate::message::{self, Segment};
 
 /// The message view shows at most this many of the newest messages.
@@ -20,16 +20,175 @@ const TEXT_WIDTH_PERCENT: usize = 90;
 /// A border on each side.
 const BORDERS: u16 = 2;
 
+/// The setup panels are at most this wide, in cells.
+const PANEL_WIDTH: u16 = 76;
+
+/// A border and a cell of padding on each side of a panel.
+const PANEL_FRAME: u16 = 4;
+
+/// Marks the selected chat, so the selection does not rest on color alone.
+const SELECTED: &str = "> ";
+const UNSELECTED: &str = "  ";
+
 pub(crate) fn draw(f: &mut Frame<'_>, app: &mut App) {
-    let [content, status] = Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
+    match &app.screen {
+        Screen::ClientId { input, error } => draw_client_id(f, input, error.as_deref()),
+        Screen::SignIn { code } => draw_sign_in(f, code.as_ref()),
+        Screen::Loading { error } => draw_loading(f, error.as_deref()),
+        Screen::Chats => draw_chats(f, app),
+    }
+}
+
+// == setup screens ==
+
+fn draw_client_id(f: &mut Frame<'_>, input: &str, error: Option<&str>) {
+    let width = panel_text_width(f.area());
+    let intro = Paragraph::new(vec![
+        Line::from("Starling signs in through your own Azure app registration."),
+        Line::from(vec![
+            "Paste its Application (client) ID. ".into(),
+            "AZURE_SETUP.md".bold(),
+            " has the steps.".into(),
+        ]),
+    ])
+    .wrap(Wrap { trim: true });
+    let error = error
+        .map(|e| Paragraph::new(Line::from(message::sanitize(e)).red()).wrap(Wrap { trim: true }));
+    let hints = hints(&[("Enter", "sign in"), ("Esc", "quit")]);
+
+    let intro_height = line_count(&intro, width);
+    let error_height = error.as_ref().map_or(0, |e| line_count(e, width));
+    let inner = panel(f, sum(&[intro_height, 1, 3, error_height, 1, 1]));
+    let [intro_area, _, input_area, error_area, _, hints_area] = Layout::vertical([
+        Constraint::Length(intro_height),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(error_height),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    f.render_widget(intro, intro_area);
+    f.render_widget(
+        Paragraph::new(input).block(
+            Block::bordered()
+                .title(" Client ID ")
+                .border_style(Style::new().green()),
+        ),
+        input_area,
+    );
+    f.set_cursor_position(input_cursor(input, input_area));
+    if let Some(error) = error {
+        f.render_widget(error, error_area);
+    }
+    f.render_widget(hints, hints_area);
+}
+
+fn draw_sign_in(f: &mut Frame<'_>, code: Option<&SignInCode>) {
+    let body = match code {
+        None => vec![Line::from("Signing in...")],
+        Some(code) => vec![
+            Line::from("On any device, open"),
+            Line::from(message::sanitize(&code.verification_uri))
+                .cyan()
+                .bold()
+                .underlined(),
+            Line::default(),
+            Line::from("and enter the code"),
+            Line::from(message::sanitize(&code.user_code))
+                .green()
+                .bold(),
+            Line::default(),
+            Line::from("Waiting for you to sign in...").dim(),
+        ],
+    };
+    draw_message_panel(f, body, &[("q", "quit")]);
+}
+
+fn draw_loading(f: &mut Frame<'_>, error: Option<&str>) {
+    match error {
+        None => draw_message_panel(
+            f,
+            vec![Line::from("Loading your chats...")],
+            &[("q", "quit")],
+        ),
+        Some(error) => draw_message_panel(
+            f,
+            vec![
+                Line::from("Could not load your chats.").red().bold(),
+                Line::default(),
+                Line::from(message::sanitize(error)),
+            ],
+            &[("r", "retry"), ("q", "quit")],
+        ),
+    }
+}
+
+/// A panel of text with a row of key hints under it.
+fn draw_message_panel(f: &mut Frame<'_>, body: Vec<Line<'_>>, keys: &[(&str, &str)]) {
+    let width = panel_text_width(f.area());
+    let body = Paragraph::new(body).wrap(Wrap { trim: true });
+    let body_height = line_count(&body, width);
+    let inner = panel(f, sum(&[body_height, 1, 1]));
+    let [body_area, _, hints_area] = Layout::vertical([
+        Constraint::Length(body_height),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    f.render_widget(body, body_area);
+    f.render_widget(hints(keys), hints_area);
+}
+
+/// Clears and frames a centered panel `height` lines tall inside, and returns the area inside the frame.
+fn panel(f: &mut Frame<'_>, height: u16) -> Rect {
+    let area = f.area().centered(
+        Constraint::Max(PANEL_WIDTH),
+        Constraint::Length(height.saturating_add(BORDERS)),
+    );
+    let block = Block::bordered()
+        .title(" Starling ".bold())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    inner
+}
+
+fn panel_text_width(area: Rect) -> u16 {
+    area.width.min(PANEL_WIDTH).saturating_sub(PANEL_FRAME)
+}
+
+fn line_count(paragraph: &Paragraph<'_>, width: u16) -> u16 {
+    u16::try_from(paragraph.line_count(width)).unwrap_or(u16::MAX)
+}
+
+fn sum(heights: &[u16]) -> u16 {
+    heights.iter().fold(0, |total, h| total.saturating_add(*h))
+}
+
+/// Key hints: each key in bold, its action dimmed.
+fn hints(keys: &[(&str, &str)]) -> Line<'static> {
+    let spans: Vec<Span<'static>> = keys
+        .iter()
+        .flat_map(|&(key, action)| [key.to_owned().bold(), format!(" {action}  ").dim()])
+        .collect();
+    Line::from(spans)
+}
+
+// == chat screen ==
+
+fn draw_chats(f: &mut Frame<'_>, app: &mut App) {
+    let [content, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(3)])
         .margin(1)
         .areas(f.area());
     let [chats, right] =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).areas(content);
+        Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).areas(content);
 
     if app.input_mode {
         let [messages, input] =
-            Layout::vertical([Constraint::Min(3), Constraint::Min(3)]).areas(right);
+            Layout::vertical([Constraint::Fill(1), Constraint::Min(3)]).areas(right);
         draw_messages(f, app, messages);
         draw_input(f, app, input);
     } else {
@@ -45,38 +204,28 @@ fn draw_chat_list(f: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, chat)| {
-            let name_style = if i == app.selected_index {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+            let name = chat.display_name.as_str();
+            let line = if i == app.selected_index {
+                Line::from(vec![SELECTED.cyan().bold(), name.cyan().bold()])
             } else {
-                Style::default()
+                Line::from(vec![UNSELECTED.into(), name.into()])
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("[{}] ", chat.kind),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(chat.display_name.as_str(), name_style),
-            ]))
+            ListItem::new(line)
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .title("Teams Chats (j↓/k↑ to navigate, q to quit)")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White)),
+    f.render_widget(
+        List::new(items).block(Block::bordered().title(" Chats ")),
+        area,
     );
-    f.render_widget(list, area);
 }
 
 fn draw_messages(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     let inner_width = area.width.saturating_sub(BORDERS);
     let lines = if app.loading_messages {
-        vec![Line::from("Loading messages...")]
+        vec![Line::from("Loading messages...").dim()]
     } else if app.messages.is_empty() {
-        vec![Line::from("No messages yet.")]
+        vec![Line::from("No messages yet.").dim()]
     } else {
         message_lines(
             &app.messages,
@@ -86,7 +235,7 @@ fn draw_messages(f: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let total = u16::try_from(paragraph.line_count(inner_width)).unwrap_or(u16::MAX);
+    let total = line_count(&paragraph, inner_width);
     let viewport = area.height.saturating_sub(BORDERS);
     app.max_scroll = total.saturating_sub(viewport);
     app.scroll_offset = if app.snap_to_bottom {
@@ -95,13 +244,8 @@ fn draw_messages(f: &mut Frame<'_>, app: &mut App, area: Rect) {
         app.scroll_offset.min(app.max_scroll)
     };
 
-    let title = if app.input_mode {
-        "Messages (ESC to cancel)"
-    } else {
-        "Messages (i to compose, PgUp(K)/PgDn(J) to scroll)"
-    };
     let paragraph = paragraph
-        .block(Block::default().title(title).borders(Borders::ALL))
+        .block(Block::bordered().title(" Messages "))
         .scroll((app.scroll_offset, 0));
     f.render_widget(paragraph, area);
 }
@@ -164,17 +308,19 @@ fn message_lines(messages: &[Message], me: Option<&str>, width: usize) -> Vec<Li
 }
 
 fn header(sender: &str, when: &str, is_me: bool) -> Line<'static> {
-    let bold = Style::default().add_modifier(Modifier::BOLD);
     if is_me {
-        Line::styled(format!("{when} Me"), bold.fg(Color::Green)).right_aligned()
+        Line::from(format!("{when} Me"))
+            .green()
+            .bold()
+            .right_aligned()
     } else {
         let sender = message::sanitize(sender);
-        Line::styled(format!("{sender} {when}"), bold.fg(Color::Cyan))
+        Line::from(format!("{sender} {when}")).cyan().bold()
     }
 }
 
 fn attachment_line(icon: &str, name: &str) -> Line<'static> {
-    Line::styled(format!("{icon} {name}"), Style::default().fg(Color::Yellow))
+    Line::from(format!("{icon} {name}")).yellow()
 }
 
 fn align(line: Line<'static>, is_me: bool) -> Line<'static> {
@@ -184,12 +330,10 @@ fn align(line: Line<'static>, is_me: bool) -> Line<'static> {
 fn draw_input(f: &mut Frame<'_>, app: &App, area: Rect) {
     let input = Paragraph::new(app.input_buffer.as_str())
         .block(
-            Block::default()
-                .title("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel)")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)),
+            Block::bordered()
+                .title(" Message ")
+                .border_style(Style::new().green()),
         )
-        .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: false });
     f.render_widget(input, area);
     f.set_cursor_position(input_cursor(&app.input_buffer, area));
@@ -212,26 +356,32 @@ fn draw_status(f: &mut Frame<'_>, app: &App, area: Rect) {
     let flashing = app
         .visual_bell_until
         .is_some_and(|until| std::time::Instant::now() < until);
-    let (border, text) = if flashing {
-        let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-        (red, red.bg(Color::White))
+    let style = if flashing {
+        Style::new().red().bold().reversed()
     } else {
-        let green = Style::default().fg(Color::Green);
-        (green, green)
+        Style::new().green()
     };
 
-    let status = Paragraph::new(format!(
-        "{} | Notification (n): {}",
-        message::sanitize(&app.status),
-        app.notification_mode
-    ))
-    .block(
-        Block::default()
-            .title("Status")
-            .borders(Borders::ALL)
-            .border_style(border),
-    )
-    .style(text);
+    let keys = if app.input_mode {
+        hints(&[
+            ("Enter", "send"),
+            ("Alt+Enter", "new line"),
+            ("Esc", "cancel"),
+        ])
+    } else {
+        let notify = format!("notifications: {}", app.notification_mode);
+        hints(&[
+            ("j/k", "chats"),
+            ("PgUp/PgDn", "scroll"),
+            ("i", "compose"),
+            ("n", notify.as_str()),
+            ("q", "quit"),
+        ])
+    };
+
+    let status = Paragraph::new(message::sanitize(&app.status))
+        .style(style)
+        .block(Block::bordered().title(" Status ").title_bottom(keys));
     f.render_widget(status, area);
 }
 
@@ -349,6 +499,7 @@ mod tests {
     #[test]
     fn draw_shows_chats_and_snaps_to_the_newest_message() {
         let mut app = App::new();
+        app.screen = Screen::Chats;
         let mut named = chat("c1");
         named.display_name = "Launch crew".to_owned();
         app.set_chats(vec![named]);
@@ -377,10 +528,70 @@ mod tests {
     #[test]
     fn draw_keeps_a_scrolled_view_in_range() {
         let mut app = App::new();
+        app.screen = Screen::Chats;
         app.set_messages(vec![from("Ann", "1", "2026-01-01T10:00:00Z", "only")]);
         app.snap_to_bottom = false;
         app.scroll_offset = 500;
         screen(&mut app, 80, 20);
         assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn the_client_id_screen_shows_the_input_and_why_it_was_refused() {
+        let mut app = App::new();
+        app.screen = Screen::ClientId {
+            input: "abc".to_owned(),
+            error: Some("That is not a client ID.".to_owned()),
+        };
+        let text = screen(&mut app, 100, 24);
+        assert!(text.contains("Client ID"));
+        assert!(text.contains("abc"));
+        assert!(text.contains("That is not a client ID."));
+        assert!(text.contains("AZURE_SETUP.md"));
+    }
+
+    #[test]
+    fn the_sign_in_screen_shows_where_to_go_and_the_code() {
+        let mut app = App::new();
+        app.screen = Screen::SignIn {
+            code: Some(SignInCode {
+                verification_uri: "https://microsoft.com/devicelogin".to_owned(),
+                user_code: "FJ9WRZ8LK".to_owned(),
+            }),
+        };
+        let text = screen(&mut app, 100, 24);
+        assert!(text.contains("https://microsoft.com/devicelogin"));
+        assert!(text.contains("FJ9WRZ8LK"));
+    }
+
+    #[test]
+    fn a_failed_load_says_why_and_offers_a_retry() {
+        let mut app = App::new();
+        app.screen = Screen::Loading {
+            error: Some("GET /me/chats failed: 403".to_owned()),
+        };
+        let text = screen(&mut app, 100, 24);
+        assert!(text.contains("Could not load your chats."));
+        assert!(text.contains("403"));
+        assert!(text.contains("retry"));
+    }
+
+    #[test]
+    fn panels_fit_a_small_terminal() {
+        let mut app = App::new();
+        app.screen = Screen::Loading {
+            error: Some("x ".repeat(400)),
+        };
+        screen(&mut app, 20, 6);
+    }
+
+    #[test]
+    fn the_selected_chat_is_marked_without_color() {
+        let mut app = App::new();
+        app.screen = Screen::Chats;
+        let mut named = chat("c1");
+        named.display_name = "Launch crew".to_owned();
+        app.set_chats(vec![named]);
+        assert!(screen(&mut app, 100, 20).contains("> Launch crew"));
     }
 }

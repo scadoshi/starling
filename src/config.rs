@@ -58,6 +58,13 @@ pub(crate) fn load_config() -> Option<Config> {
     serde_json::from_str(&json).ok()
 }
 
+/// Stores the client ID in `config.json`, keeping the other settings.
+pub(crate) fn save_client_id(client_id: &str) -> Result<()> {
+    let mut config = load_config().unwrap_or_default();
+    config.client_id = Some(client_id.to_owned());
+    save_config(&config)
+}
+
 pub(crate) fn save_config(config: &Config) -> Result<()> {
     write_private(
         &app_dir()?.join("config.json"),

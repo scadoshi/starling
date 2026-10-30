@@ -55,9 +55,36 @@ impl fmt::Display for NotificationMode {
     }
 }
 
+/// Which full-screen view is up. Every screen but `Chats` is a centered panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Screen {
+    /// Asking for the Azure app's client ID. `error` says why the last attempt failed.
+    ClientId {
+        input: String,
+        error: Option<String>,
+    },
+    /// Signing in. `code` is `None` while a saved token is checked or Microsoft has not answered yet.
+    SignIn {
+        code: Option<SignInCode>,
+    },
+    /// Fetching the chat list. `error` says why it failed, and `r` retries.
+    Loading {
+        error: Option<String>,
+    },
+    Chats,
+}
+
+/// What the user needs to sign in on another device: open `verification_uri`, enter `user_code`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignInCode {
+    pub(crate) verification_uri: String,
+    pub(crate) user_code: String,
+}
+
 /// Everything the UI draws from.
 #[derive(Debug)]
 pub(crate) struct App {
+    pub(crate) screen: Screen,
     pub(crate) chats: Vec<Chat>,
     pub(crate) status: String,
     pub(crate) selected_index: usize,
@@ -79,8 +106,9 @@ pub(crate) struct App {
 impl App {
     pub(crate) fn new() -> Self {
         Self {
+            screen: Screen::SignIn { code: None },
             chats: Vec::new(),
-            status: "Loading...".to_owned(),
+            status: String::new(),
             selected_index: 0,
             current_user_name: None,
             messages: Vec::new(),

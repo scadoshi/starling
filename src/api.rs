@@ -1,5 +1,6 @@
 //! Microsoft Graph calls: the signed-in user, chats, their members and messages.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -196,6 +197,52 @@ pub(crate) async fn fetch_messages(access_token: &str, chat_id: &str) -> Result<
     let page: Page<Message> =
         fetch_json(access_token, &format!("/chats/{chat_id}/messages")).await?;
     Ok(page.value)
+}
+
+/// Everything the chat screen needs to open.
+#[derive(Debug)]
+pub(crate) struct Startup {
+    /// `None` when the profile could not be fetched.
+    pub(crate) user_name: Option<String>,
+    pub(crate) chats: Vec<Chat>,
+    /// Chat ID to the time of its newest message. Chats that failed or are empty are left out.
+    pub(crate) last_message_times: HashMap<String, String>,
+}
+
+/// The user's name, their chats, and the newest message time of every chat, fetched at once.
+pub(crate) async fn fetch_startup(access_token: &str) -> Result<Startup> {
+    let user_name = fetch_me(access_token)
+        .await
+        .ok()
+        .map(|user| user.display_name);
+    let chats = fetch_chats(access_token)
+        .await
+        .context("Failed to fetch chats")?;
+
+    let tasks: Vec<_> = chats
+        .iter()
+        .map(|chat| {
+            let token = access_token.to_owned();
+            let chat_id = chat.id.clone();
+            tokio::spawn(async move {
+                let messages = fetch_messages(&token, &chat_id).await.ok()?;
+                let time = crate::app::newest(&messages)?.created_date_time.clone();
+                Some((chat_id, time))
+            })
+        })
+        .collect();
+
+    let mut last_message_times = HashMap::new();
+    for task in tasks {
+        if let Ok(Some((chat_id, time))) = task.await {
+            last_message_times.insert(chat_id, time);
+        }
+    }
+    Ok(Startup {
+        user_name,
+        chats,
+        last_message_times,
+    })
 }
 
 /// Posts `content` to the chat as plain text.

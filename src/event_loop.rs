@@ -1,4 +1,4 @@
-//! The main loop: applies results from background requests, handles keys, and draws.
+//! The main loop: sign-in, loading, then the chat screen, all on the terminal.
 //!
 //! Handlers never touch the network. They queue a [`Request`], and [`EventLoop::dispatch`] spawns each one as a task that sends an [`Update`] back.
 
@@ -7,32 +7,43 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use futures::StreamExt;
 use notify_rust::Notification;
-use ratatui::Terminal;
-use ratatui::backend::Backend;
+use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::time::MissedTickBehavior;
 
-use crate::api::{self, Chat, Message};
-use crate::app::{self, App, ChatOrder};
+use crate::api::{self, Chat, Message, Startup};
+use crate::app::{self, App, ChatOrder, Screen, SignInCode};
 use crate::{auth, config, message, ui};
 
-/// How long a key press is waited for before the loop goes round again.
-const POLL: Duration = Duration::from_millis(100);
+/// How often the loop wakes without input, to redraw timed effects and count toward the message refresh.
+const TICK: Duration = Duration::from_millis(100);
 
 /// How often the chat list, and the newest message of every chat, is fetched.
 const CHAT_REFRESH: Duration = Duration::from_secs(3);
 
-/// The selected chat's messages reload every this many polls, about three seconds.
-const MESSAGE_REFRESH_POLLS: u32 = 30;
+/// The selected chat's messages reload every this many ticks, about three seconds.
+const MESSAGE_REFRESH_TICKS: u32 = 30;
 
 /// How long the status bar flashes for a console notification.
 const BELL_FLASH: Duration = Duration::from_millis(200);
 
-/// Network work a handler asks for.
+/// Work a handler asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Request {
+    /// Signs in with a saved token, or with a device code when there is none.
+    SignIn {
+        client_id: String,
+    },
+    SaveClientId(String),
+    /// Fetches what the chat screen needs to open.
+    Load,
+    /// Fetches the chat list once, after a new message moves a chat.
     Chats,
+    /// Fetches the chat list every [`CHAT_REFRESH`] for as long as the app runs.
+    WatchChats,
     Messages(String),
     /// Only the newest message, to spot new messages in chats that are not on screen.
     Newest(String),
@@ -46,6 +57,11 @@ enum Request {
 /// A result from a background request.
 #[derive(Debug)]
 enum Update {
+    SignInCode(SignInCode),
+    SignedIn,
+    SignInFailed(String),
+    Loaded(Startup),
+    LoadFailed(String),
     Chats(Vec<Chat>),
     Messages {
         chat_id: String,
@@ -69,66 +85,133 @@ pub(crate) struct EventLoop {
     tx: UnboundedSender<Update>,
     rx: UnboundedReceiver<Update>,
     pending: Vec<Request>,
+    /// The client ID being signed in with, kept to refill the field if sign-in fails.
+    client_id: Option<String>,
     order: ChatOrder,
     /// Graph's latest chat list, before `order` is applied.
     latest_chats: Option<Vec<Chat>>,
     /// The chat selected at the last message refresh, so a refresh skips a chat that was only just opened.
     refreshed_chat: Option<String>,
-    polls: u32,
+    ticks: u32,
 }
 
 impl EventLoop {
-    pub(crate) fn new(order: ChatOrder) -> Self {
+    pub(crate) fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             tx,
             rx,
             pending: Vec::new(),
-            order,
+            client_id: None,
+            order: ChatOrder::default(),
             latest_chats: None,
             refreshed_chat: None,
-            polls: 0,
+            ticks: 0,
         }
     }
 
-    /// Runs until the user quits.
+    /// Runs until the user quits, starting with sign-in, or with a prompt for the client ID when there is none.
     ///
     /// # Errors
     ///
     /// Fails when the terminal cannot be drawn to or read from.
-    pub(crate) fn run<B>(mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
-    where
-        B: Backend,
-        B::Error: Send + Sync + 'static,
-    {
-        self.spawn_chat_refresh();
-        self.open_selected(app);
+    pub(crate) async fn run(
+        mut self,
+        terminal: &mut DefaultTerminal,
+        app: &mut App,
+        client_id: Option<String>,
+    ) -> Result<()> {
+        self.start(app, client_id);
+        let mut events = EventStream::new();
+        let mut ticks = tokio::time::interval(TICK);
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
-            while let Ok(update) = self.rx.try_recv() {
-                self.apply(app, update);
-            }
-            self.tick(app);
+            self.dispatch();
             terminal.draw(|f| ui::draw(f, app))?;
 
-            if event::poll(POLL)?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-                && self.handle_key(app, key) == Flow::Quit
-            {
-                return Ok(());
+            tokio::select! {
+                Some(update) = self.rx.recv() => self.apply(app, update),
+                _ = ticks.tick() => self.tick(app),
+                event = events.next() => match event {
+                    Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                        if self.handle_key(app, key) == Flow::Quit {
+                            return Ok(());
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Ok(()),
+                },
             }
-            self.dispatch();
         }
+    }
+
+    fn start(&mut self, app: &mut App, client_id: Option<String>) {
+        match client_id {
+            Some(id) => self.sign_in(app, id),
+            None => {
+                app.screen = Screen::ClientId {
+                    input: String::new(),
+                    error: None,
+                };
+            }
+        }
+    }
+
+    fn sign_in(&mut self, app: &mut App, client_id: String) {
+        app.screen = Screen::SignIn { code: None };
+        self.pending.push(Request::SignIn {
+            client_id: client_id.clone(),
+        });
+        self.client_id = Some(client_id);
     }
 
     fn apply(&mut self, app: &mut App, update: Update) {
         match update {
+            Update::SignInCode(code) => {
+                if let Screen::SignIn { code: shown } = &mut app.screen {
+                    *shown = Some(code);
+                }
+            }
+            Update::SignedIn => {
+                app.screen = Screen::Loading { error: None };
+                self.pending.push(Request::Load);
+            }
+            Update::SignInFailed(error) => {
+                app.screen = Screen::ClientId {
+                    input: self.client_id.clone().unwrap_or_default(),
+                    error: Some(error),
+                };
+            }
+            Update::Loaded(startup) => self.on_loaded(app, startup),
+            Update::LoadFailed(error) => app.screen = Screen::Loading { error: Some(error) },
             Update::Chats(chats) => self.on_chats(app, chats),
             Update::Messages { chat_id, messages } => self.on_messages(app, &chat_id, messages),
             Update::Newest { chat_id, message } => self.on_newest(app, &chat_id, &message),
             Update::Status(status) => app.status = status,
         }
+    }
+
+    /// Opens the chat screen on the loaded chats, newest activity first, and starts watching for changes.
+    fn on_loaded(&mut self, app: &mut App, startup: Startup) {
+        if !matches!(app.screen, Screen::Loading { .. }) {
+            return;
+        }
+        let Startup {
+            user_name,
+            mut chats,
+            last_message_times,
+        } = startup;
+
+        app::sort_by_activity(&mut chats, &last_message_times);
+        self.order = ChatOrder::new(&chats, last_message_times);
+        app.status = format!("Loaded {} chats", chats.len());
+        app.set_chats(chats);
+        app.current_user_name = user_name;
+        app.screen = Screen::Chats;
+        self.pending.push(Request::WatchChats);
+        self.open_selected(app);
     }
 
     /// Takes a fresh chat list: checks every other chat for a new message, and reloads the open one.
@@ -183,13 +266,13 @@ impl EventLoop {
         self.pending.push(Request::MarkRead(chat_id.to_owned()));
     }
 
-    /// Counts a pass of the loop, and reloads the open chat every [`MESSAGE_REFRESH_POLLS`] of them.
+    /// Counts a tick, and reloads the open chat every [`MESSAGE_REFRESH_TICKS`] of them.
     fn tick(&mut self, app: &App) {
-        self.polls = self.polls.saturating_add(1);
-        if self.polls < MESSAGE_REFRESH_POLLS {
+        self.ticks = self.ticks.saturating_add(1);
+        if self.ticks < MESSAGE_REFRESH_TICKS {
             return;
         }
-        self.polls = 0;
+        self.ticks = 0;
 
         let selected = app.selected_chat_id().map(str::to_owned);
         if let Some(id) = &selected
@@ -201,6 +284,49 @@ impl EventLoop {
     }
 
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> Flow {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Flow::Quit;
+        }
+        match &mut app.screen {
+            Screen::ClientId { input, error } => match key.code {
+                KeyCode::Esc => return Flow::Quit,
+                KeyCode::Enter => {
+                    let id = input.trim().to_owned();
+                    if auth::is_client_id(&id) {
+                        self.pending.push(Request::SaveClientId(id.clone()));
+                        self.sign_in(app, id);
+                    } else {
+                        *error = Some(
+                            "That is not a client ID. It looks like 12345678-1234-1234-1234-123456789abc."
+                                .to_owned(),
+                        );
+                    }
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => input.push(c),
+                _ => {}
+            },
+            Screen::SignIn { .. } => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    return Flow::Quit;
+                }
+            }
+            Screen::Loading { error } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => return Flow::Quit,
+                KeyCode::Char('r') if error.is_some() => {
+                    *error = None;
+                    self.pending.push(Request::Load);
+                }
+                _ => {}
+            },
+            Screen::Chats => return self.handle_chats_key(app, key),
+        }
+        Flow::Continue
+    }
+
+    fn handle_chats_key(&mut self, app: &mut App, key: KeyEvent) -> Flow {
         let before = app.selected_chat_id().map(str::to_owned);
         match key.code {
             KeyCode::PageUp => app.scroll_up(),
@@ -267,35 +393,15 @@ impl EventLoop {
         for request in mem::take(&mut self.pending) {
             let tx = self.tx.clone();
             tokio::spawn(async move {
-                let Ok(token) = auth::fetch_token_silently().await else {
-                    return;
-                };
-                if let Some(update) = fetch_update(&token, request).await {
+                if let Some(update) = perform(&tx, request).await {
                     tx.send(update).ok();
                 }
             });
         }
     }
-
-    fn spawn_chat_refresh(&self) {
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(CHAT_REFRESH);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                if let Ok(token) = auth::fetch_token_silently().await
-                    && let Some(update) = fetch_update(&token, Request::Chats).await
-                    && tx.send(update).is_err()
-                {
-                    return;
-                }
-            }
-        });
-    }
 }
 
-/// Keys outside the compose box.
+/// Keys on the chat screen outside the compose box.
 fn handle_browse_key(app: &mut App, code: KeyCode) -> Flow {
     match code {
         KeyCode::Char('q') => return Flow::Quit,
@@ -320,27 +426,95 @@ fn handle_browse_key(app: &mut App, code: KeyCode) -> Flow {
     Flow::Continue
 }
 
-/// Runs one request. Failures are dropped, except a failed send, which comes back as a status.
-async fn fetch_update(token: &str, request: Request) -> Option<Update> {
+/// Runs one request. Chat requests without a usable token, and failed fetches, give nothing: the next refresh tries again.
+async fn perform(tx: &UnboundedSender<Update>, request: Request) -> Option<Update> {
     match request {
-        Request::Chats => api::fetch_chats(token).await.ok().map(Update::Chats),
+        Request::SignIn { client_id } => Some(sign_in(tx, &client_id).await),
+        Request::SaveClientId(client_id) => config::save_client_id(&client_id)
+            .err()
+            .map(|e| Update::Status(format!("Could not save the client ID: {e:#}"))),
+        Request::Load => Some(match load().await {
+            Ok(startup) => Update::Loaded(startup),
+            Err(e) => Update::LoadFailed(format!("{e:#}")),
+        }),
+        Request::Chats => api::fetch_chats(&token().await?)
+            .await
+            .ok()
+            .map(Update::Chats),
+        Request::WatchChats => {
+            watch_chats(tx).await;
+            None
+        }
         Request::Messages(chat_id) => {
-            let messages = api::fetch_messages(token, &chat_id).await.ok()?;
+            let token = token().await?;
+            let messages = api::fetch_messages(&token, &chat_id).await.ok()?;
             Some(Update::Messages { chat_id, messages })
         }
         Request::Newest(chat_id) => {
-            let messages = api::fetch_messages(token, &chat_id).await.ok()?;
+            let token = token().await?;
+            let messages = api::fetch_messages(&token, &chat_id).await.ok()?;
             let message = app::newest(&messages)?.clone();
             Some(Update::Newest { chat_id, message })
         }
         Request::MarkRead(chat_id) => {
-            api::mark_chat_as_read(token, &chat_id).await;
+            api::mark_chat_as_read(&token().await?, &chat_id).await;
             None
         }
-        Request::Send { chat_id, text } => match api::send_message(token, &chat_id, &text).await {
-            Ok(()) => Box::pin(fetch_update(token, Request::Messages(chat_id))).await,
-            Err(e) => Some(Update::Status(format!("{e:#}"))),
-        },
+        Request::Send { chat_id, text } => {
+            let token = token().await?;
+            match api::send_message(&token, &chat_id, &text).await {
+                Ok(()) => Box::pin(perform(tx, Request::Messages(chat_id))).await,
+                Err(e) => Some(Update::Status(format!("{e:#}"))),
+            }
+        }
+    }
+}
+
+async fn token() -> Option<String> {
+    auth::fetch_token_silently().await.ok()
+}
+
+/// Signs in with the saved token if it still works, else with a device code the user enters on another device.
+async fn sign_in(tx: &UnboundedSender<Update>, client_id: &str) -> Update {
+    if auth::fetch_token_silently().await.is_ok() {
+        return Update::SignedIn;
+    }
+    let result = async {
+        let code = auth::start_device_flow(client_id).await?;
+        tx.send(Update::SignInCode(SignInCode {
+            verification_uri: code.verification_uri.clone(),
+            user_code: code.user_code.clone(),
+        }))
+        .ok();
+        auth::poll_for_token(client_id, &code).await
+    }
+    .await;
+    match result {
+        Ok(()) => Update::SignedIn,
+        Err(e) => Update::SignInFailed(format!("{e:#}")),
+    }
+}
+
+async fn load() -> Result<Startup> {
+    let token = auth::fetch_token_silently().await?;
+    api::fetch_startup(&token).await
+}
+
+/// Sends a fresh chat list every [`CHAT_REFRESH`], one fetch at a time, until the loop goes away.
+async fn watch_chats(tx: &UnboundedSender<Update>) {
+    let mut interval = tokio::time::interval(CHAT_REFRESH);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        if tx.is_closed() {
+            return;
+        }
+        if let Some(token) = token().await
+            && let Ok(chats) = api::fetch_chats(&token).await
+            && tx.send(Update::Chats(chats)).is_err()
+        {
+            return;
+        }
     }
 }
 
@@ -372,20 +546,183 @@ mod tests {
     use super::*;
     use crate::app::tests::{chat, message};
 
+    const CLIENT_ID: &str = "12345678-1234-1234-1234-123456789abc";
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn type_text(event_loop: &mut EventLoop, app: &mut App, text: &str) {
+        for c in text.chars() {
+            event_loop.handle_key(app, key(KeyCode::Char(c)));
+        }
+    }
+
     fn setup(chat_ids: &[&str]) -> (EventLoop, App) {
         let chats: Vec<Chat> = chat_ids.iter().map(|id| chat(id)).collect();
-        let event_loop = EventLoop::new(ChatOrder::new(&chats, HashMap::new()));
+        let mut event_loop = EventLoop::new();
+        event_loop.order = ChatOrder::new(&chats, HashMap::new());
         let mut app = App::new();
+        app.screen = Screen::Chats;
         app.set_chats(chats);
         (event_loop, app)
     }
 
     fn order_of(app: &App) -> Vec<&str> {
         app.chats.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn without_a_client_id_it_asks_for_one() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        event_loop.start(&mut app, None);
+        assert_eq!(
+            app.screen,
+            Screen::ClientId {
+                input: String::new(),
+                error: None
+            }
+        );
+        assert_eq!(event_loop.pending, []);
+    }
+
+    #[test]
+    fn a_bad_client_id_is_refused_on_screen() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        event_loop.start(&mut app, None);
+        type_text(&mut event_loop, &mut app, "not-an-id");
+        event_loop.handle_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(
+            &app.screen,
+            Screen::ClientId { input, error: Some(_) } if input == "not-an-id"
+        ));
+        assert_eq!(event_loop.pending, []);
+    }
+
+    #[test]
+    fn a_good_client_id_is_saved_and_used_to_sign_in() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        event_loop.start(&mut app, None);
+        type_text(&mut event_loop, &mut app, &format!(" {CLIENT_ID} "));
+        event_loop.handle_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.screen, Screen::SignIn { code: None });
+        assert_eq!(
+            event_loop.pending,
+            [
+                Request::SaveClientId(CLIENT_ID.to_owned()),
+                Request::SignIn {
+                    client_id: CLIENT_ID.to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sign_in_shows_the_code_then_loads() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        event_loop.start(&mut app, Some(CLIENT_ID.to_owned()));
+        let code = SignInCode {
+            verification_uri: "https://microsoft.com/devicelogin".to_owned(),
+            user_code: "FJ9WRZ8LK".to_owned(),
+        };
+        event_loop.apply(&mut app, Update::SignInCode(code.clone()));
+        assert_eq!(app.screen, Screen::SignIn { code: Some(code) });
+
+        event_loop.pending.clear();
+        event_loop.apply(&mut app, Update::SignedIn);
+        assert_eq!(app.screen, Screen::Loading { error: None });
+        assert_eq!(event_loop.pending, [Request::Load]);
+    }
+
+    #[test]
+    fn a_failed_sign_in_returns_to_the_client_id_with_the_reason() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        event_loop.start(&mut app, Some(CLIENT_ID.to_owned()));
+        event_loop.apply(&mut app, Update::SignInFailed("declined".to_owned()));
+        assert_eq!(
+            app.screen,
+            Screen::ClientId {
+                input: CLIENT_ID.to_owned(),
+                error: Some("declined".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_load_retries_on_r() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        app.screen = Screen::Loading { error: None };
+        event_loop.handle_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(event_loop.pending, []);
+
+        event_loop.apply(&mut app, Update::LoadFailed("offline".to_owned()));
+        event_loop.handle_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(app.screen, Screen::Loading { error: None });
+        assert_eq!(event_loop.pending, [Request::Load]);
+    }
+
+    #[test]
+    fn loading_opens_the_most_active_chat_and_starts_watching() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        app.screen = Screen::Loading { error: None };
+        event_loop.apply(
+            &mut app,
+            Update::Loaded(Startup {
+                user_name: Some("Me".to_owned()),
+                chats: vec![chat("quiet"), chat("busy")],
+                last_message_times: HashMap::from([(
+                    "busy".to_owned(),
+                    "2026-01-01T00:00:00Z".to_owned(),
+                )]),
+            }),
+        );
+        assert_eq!(app.screen, Screen::Chats);
+        assert_eq!(order_of(&app), ["busy", "quiet"]);
+        assert_eq!(app.current_user_name.as_deref(), Some("Me"));
+        assert_eq!(
+            event_loop.pending,
+            [Request::WatchChats, Request::Messages("busy".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_late_load_does_not_reopen_the_chat_screen() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        event_loop.apply(
+            &mut app,
+            Update::Loaded(Startup {
+                user_name: None,
+                chats: Vec::new(),
+                last_message_times: HashMap::new(),
+            }),
+        );
+        assert_eq!(order_of(&app), ["a"]);
+        assert_eq!(event_loop.pending, []);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_any_screen() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for screen in [
+            Screen::ClientId {
+                input: String::new(),
+                error: None,
+            },
+            Screen::SignIn { code: None },
+            Screen::Chats,
+        ] {
+            let (mut event_loop, mut app) = setup(&["a"]);
+            app.screen = screen;
+            app.input_mode = true;
+            assert_eq!(event_loop.handle_key(&mut app, ctrl_c), Flow::Quit);
+        }
     }
 
     #[test]
@@ -500,11 +837,11 @@ mod tests {
     #[test]
     fn the_open_chat_reloads_every_refresh_after_the_first() {
         let (mut event_loop, app) = setup(&["a"]);
-        for _ in 0..MESSAGE_REFRESH_POLLS {
+        for _ in 0..MESSAGE_REFRESH_TICKS {
             event_loop.tick(&app);
         }
         assert_eq!(event_loop.pending, []);
-        for _ in 0..MESSAGE_REFRESH_POLLS {
+        for _ in 0..MESSAGE_REFRESH_TICKS {
             event_loop.tick(&app);
         }
         assert_eq!(event_loop.pending, [Request::Messages("a".to_owned())]);
