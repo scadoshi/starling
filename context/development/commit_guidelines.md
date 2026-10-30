@@ -1,0 +1,38 @@
+# Commit Guidelines
+
+- Concise, one-line messages (multi-line only when many changes)
+- Group related files logically
+- No emojis
+- One change per commit, and every commit builds and passes CI
+- Use `git diff` to understand changes before committing
+- **Never** include AI-agent signatures in commits
+    - No "Co-Authored-By: Claude..."
+    - No "Generated with [Claude Code]..."
+    - No "Written with the help of ..."
+- Never push without being asked
+- Never amend or force-push a pushed commit. A mistake gets a follow-up commit.
+
+## CI: how your commits get checked (run these BEFORE you push)
+
+`.github/workflows/ci.yml` runs `test` and `lint` on every push to `main` and every pull request, on Linux runners. Reproduce the gate locally first.
+
+### 1. Format with nightly
+
+`rustfmt.toml` enables four unstable options: `imports_granularity = "Module"` (one `use` line per module), `group_imports = "StdExternalCrate"` (std, then external crates, then this crate, blank line between groups), `hex_literal_case = "Lower"` and `format_macro_matchers = true`. Stable `cargo fmt` silently skips all of them: your code looks formatted locally but fails CI.
+
+```bash
+cargo +nightly fmt        # not `cargo fmt`; stable can't apply the unstable options
+```
+
+### 2. Clippy, warnings are errors
+
+```bash
+cargo clippy --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps   # rustdoc warnings fail CI's lint job the way clippy's do
+```
+
+### 3. Tests
+
+```bash
+cargo test                # no environment, no network
+```
