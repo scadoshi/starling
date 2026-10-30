@@ -2,8 +2,6 @@
 
 Microsoft Teams chats in the terminal, built on [ratatui](https://ratatui.rs). Read and send chat messages without opening the Teams app.
 
-![Starling](assets/images/tt.png)
-
 Starling signs in with Microsoft's device-code flow against an Azure app you register yourself, and talks only to `login.microsoftonline.com` and `graph.microsoft.com`. It asks for `User.Read`, `Chat.ReadWrite` and `offline_access`, nothing else.
 
 ## Setup
