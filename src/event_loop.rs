@@ -12,6 +12,7 @@ use futures::StreamExt;
 use notify_rust::Notification;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::api::{self, Chat, Message, Startup};
@@ -40,6 +41,8 @@ enum Request {
         client_id: String,
     },
     SaveClientId(String),
+    /// Deletes the saved token and profile.
+    SignOut,
     /// Stores a theme by its [`crate::theme::Theme::key`].
     SaveTheme(String),
     SaveNotificationMode(NotificationMode),
@@ -65,6 +68,7 @@ enum Update {
     SignInCode(SignInCode),
     SignedIn,
     SignInFailed(String),
+    SignedOut,
     Loaded(Startup),
     LoadFailed(String),
     Chats(Vec<Chat>),
@@ -98,6 +102,8 @@ pub(crate) struct EventLoop {
     /// The chat selected at the last message refresh, so a refresh skips a chat that was only just opened.
     refreshed_chat: Option<String>,
     ticks: u32,
+    /// Tasks that belong to the current sign-in, such as the sign-in poll and the chat refresh, aborted when it ends.
+    session: Vec<AbortHandle>,
 }
 
 impl EventLoop {
@@ -112,6 +118,7 @@ impl EventLoop {
             latest_chats: None,
             refreshed_chat: None,
             ticks: 0,
+            session: Vec::new(),
         }
     }
 
@@ -179,23 +186,65 @@ impl EventLoop {
                     *shown = Some(code);
                 }
             }
-            Update::SignedIn => {
+            Update::SignedIn if matches!(app.screen, Screen::SignIn { .. }) => {
                 app.screen = Screen::Loading { error: None };
                 self.pending.push(Request::Load);
             }
-            Update::SignInFailed(error) => {
+            Update::SignInFailed(error) if matches!(app.screen, Screen::SignIn { .. }) => {
                 app.screen = Screen::ClientId {
                     input: self.client_id.clone().unwrap_or_default(),
                     error: Some(error),
                 };
             }
+            Update::SignedOut => {
+                self.end_session(app);
+                match self.client_id.clone() {
+                    Some(id) => self.sign_in(app, id),
+                    None => self.start(app, None),
+                }
+            }
             Update::Loaded(startup) => self.on_loaded(app, startup),
-            Update::LoadFailed(error) => app.screen = Screen::Loading { error: Some(error) },
-            Update::Chats(chats) => self.on_chats(app, chats),
-            Update::Messages { chat_id, messages } => self.on_messages(app, &chat_id, messages),
-            Update::Newest { chat_id, message } => self.on_newest(app, &chat_id, &message),
+            Update::LoadFailed(error) if matches!(app.screen, Screen::Loading { .. }) => {
+                app.screen = Screen::Loading { error: Some(error) };
+            }
+            Update::Chats(chats) if app.screen == Screen::Chats => self.on_chats(app, chats),
+            Update::Messages { chat_id, messages } if app.screen == Screen::Chats => {
+                self.on_messages(app, &chat_id, messages);
+            }
+            Update::Newest { chat_id, message } if app.screen == Screen::Chats => {
+                self.on_newest(app, &chat_id, &message);
+            }
             Update::Status(status) => app.status = status,
+            // A result from a sign-in or account that has since ended.
+            Update::SignedIn
+            | Update::SignInFailed(_)
+            | Update::LoadFailed(_)
+            | Update::Chats(_)
+            | Update::Messages { .. }
+            | Update::Newest { .. } => {}
         }
+    }
+
+    /// Stops the current sign-in's background work and forgets its chats, so nothing from it reaches the screen again.
+    fn end_session(&mut self, app: &mut App) {
+        for task in self.session.drain(..) {
+            task.abort();
+        }
+        self.pending.clear();
+        self.order = ChatOrder::default();
+        self.latest_chats = None;
+        self.refreshed_chat = None;
+        self.ticks = 0;
+        app.clear_account();
+    }
+
+    /// Leaves sign-in for the client ID prompt, filled in with the current ID.
+    fn change_client_id(&mut self, app: &mut App) {
+        self.end_session(app);
+        app.screen = Screen::ClientId {
+            input: self.client_id.clone().unwrap_or_default(),
+            error: None,
+        };
     }
 
     /// Opens the chat screen on the loaded chats, newest activity first, and starts watching for changes.
@@ -313,11 +362,11 @@ impl EventLoop {
                 KeyCode::Char(c) => input.push(c),
                 _ => {}
             },
-            Screen::SignIn { .. } => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                    return Flow::Quit;
-                }
-            }
+            Screen::SignIn { .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => return Flow::Quit,
+                KeyCode::Char('c') => self.change_client_id(app),
+                _ => {}
+            },
             Screen::Loading { error } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => return Flow::Quit,
                 KeyCode::Char('r') if error.is_some() => {
@@ -367,6 +416,10 @@ impl EventLoop {
                     .push(Request::SaveNotificationMode(app.notification_mode));
             }
             KeyCode::Char('t') => app.open_theme_picker(),
+            KeyCode::Char('O') => {
+                "Signing out...".clone_into(&mut app.status);
+                self.pending.push(Request::SignOut);
+            }
             KeyCode::Char('i') => {
                 app.input_mode = true;
                 app.input_buffer.clear();
@@ -438,12 +491,19 @@ impl EventLoop {
 
     fn dispatch(&mut self) {
         for request in mem::take(&mut self.pending) {
+            let belongs_to_session = matches!(
+                request,
+                Request::SignIn { .. } | Request::Load | Request::WatchChats
+            );
             let tx = self.tx.clone();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 if let Some(update) = perform(&tx, request).await {
                     tx.send(update).ok();
                 }
             });
+            if belongs_to_session {
+                self.session.push(task.abort_handle());
+            }
         }
     }
 }
@@ -454,6 +514,10 @@ async fn perform(tx: &UnboundedSender<Update>, request: Request) -> Option<Updat
         Request::SignIn { client_id } => Some(sign_in(tx, &client_id).await),
         Request::SaveClientId(client_id) => save("client ID", |c| c.client_id = Some(client_id)),
         Request::SaveTheme(key) => save("theme", |c| c.theme = Some(key)),
+        Request::SignOut => Some(match auth::sign_out() {
+            Ok(()) => Update::SignedOut,
+            Err(e) => Update::Status(format!("Could not sign out: {e:#}")),
+        }),
         Request::SaveNotificationMode(mode) => {
             save("notification mode", |c| c.notification_mode = Some(mode))
         }
@@ -874,6 +938,76 @@ mod tests {
             event_loop.handle_key(&mut app, key(KeyCode::Char('q'))),
             Flow::Quit
         );
+    }
+
+    #[test]
+    fn capital_o_queues_a_sign_out() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        event_loop.handle_key(&mut app, key(KeyCode::Char('O')));
+        assert_eq!(event_loop.pending, [Request::SignOut]);
+        assert_eq!(app.status, "Signing out...");
+    }
+
+    #[test]
+    fn signing_out_forgets_the_account_and_signs_in_again_with_the_same_app() {
+        let (mut event_loop, mut app) = setup(&["a", "b"]);
+        event_loop.client_id = Some(CLIENT_ID.to_owned());
+        app.theme = crate::theme::Theme::parse("nord-dark").unwrap();
+        app.current_user_name = Some("Me".to_owned());
+        event_loop.pending.push(Request::Messages("a".to_owned()));
+
+        event_loop.apply(&mut app, Update::SignedOut);
+        assert_eq!(app.screen, Screen::SignIn { code: None });
+        assert!(app.chats.is_empty() && app.current_user_name.is_none());
+        assert_eq!(app.theme, crate::theme::Theme::parse("nord-dark").unwrap());
+        assert_eq!(
+            event_loop.pending,
+            [Request::SignIn {
+                client_id: CLIENT_ID.to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn signing_out_without_a_known_app_asks_for_the_client_id() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        event_loop.apply(&mut app, Update::SignedOut);
+        assert!(matches!(app.screen, Screen::ClientId { .. }));
+    }
+
+    #[test]
+    fn c_on_sign_in_goes_back_to_the_client_id_and_ignores_the_old_sign_in() {
+        let mut event_loop = EventLoop::new();
+        let mut app = App::new();
+        event_loop.start(&mut app, Some(CLIENT_ID.to_owned()));
+        event_loop.handle_key(&mut app, key(KeyCode::Char('c')));
+        let back = Screen::ClientId {
+            input: CLIENT_ID.to_owned(),
+            error: None,
+        };
+        assert_eq!(app.screen, back);
+        assert_eq!(event_loop.pending, []);
+
+        event_loop.apply(&mut app, Update::SignedIn);
+        event_loop.apply(&mut app, Update::SignInFailed("late".to_owned()));
+        assert_eq!(app.screen, back);
+    }
+
+    #[test]
+    fn chat_results_after_leaving_the_chat_screen_are_dropped() {
+        let (mut event_loop, mut app) = setup(&["a"]);
+        app.screen = Screen::SignIn { code: None };
+        event_loop.apply(&mut app, Update::Chats(vec![chat("x")]));
+        event_loop.apply(
+            &mut app,
+            Update::Messages {
+                chat_id: "a".to_owned(),
+                messages: vec![message("1", "2026-01-01T00:00:00Z")],
+            },
+        );
+        assert_eq!(order_of(&app), ["a"]);
+        assert!(app.messages.is_empty());
+        assert_eq!(event_loop.pending, []);
     }
 
     #[test]

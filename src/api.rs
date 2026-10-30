@@ -166,6 +166,11 @@ fn profile_path() -> Result<PathBuf> {
     Ok(crate::config::app_dir()?.join("profile.json"))
 }
 
+/// Deletes the cached profile, so the next account fetches its own.
+pub(crate) fn forget_profile() -> Result<()> {
+    crate::config::remove(&profile_path()?)
+}
+
 fn load_profile() -> Result<Option<User>> {
     let path = profile_path()?;
     if !path.exists() {

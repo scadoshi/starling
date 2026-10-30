@@ -54,6 +54,14 @@ pub(crate) fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Deletes the file at `path`. A file that is already gone is not an error.
+pub(crate) fn remove(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
 /// The config file, or `None` when it is missing or unreadable.
 pub(crate) fn load_config() -> Option<Config> {
     let json = fs::read_to_string(app_dir().ok()?.join("config.json")).ok()?;

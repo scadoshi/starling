@@ -194,6 +194,22 @@ impl App {
             .unwrap_or_else(|| self.chats.len().saturating_sub(1));
     }
 
+    /// Clears everything that belongs to the signed-in account, keeping the screen and the user's settings.
+    pub(crate) fn clear_account(&mut self) {
+        self.chats.clear();
+        self.messages.clear();
+        self.selected_index = 0;
+        self.current_user_name = None;
+        self.loading_messages = false;
+        self.input_mode = false;
+        self.input_buffer.clear();
+        self.scroll_offset = 0;
+        self.max_scroll = 0;
+        self.snap_to_bottom = true;
+        self.picker = None;
+        self.status.clear();
+    }
+
     /// Opens the theme picker on the current theme.
     pub(crate) fn open_theme_picker(&mut self) {
         let current = Row::Choice(self.theme.family);

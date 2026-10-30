@@ -121,7 +121,12 @@ fn draw_sign_in(f: &mut Frame<'_>, palette: &Palette, code: Option<&SignInCode>)
             Line::from("Waiting for you to sign in...").style(palette.muted),
         ],
     };
-    draw_message_panel(f, palette, body, &[("q", "quit")]);
+    draw_message_panel(
+        f,
+        palette,
+        body,
+        &[("c", "change client ID"), ("q", "quit")],
+    );
 }
 
 fn draw_loading(f: &mut Frame<'_>, palette: &Palette, error: Option<&str>) {
@@ -428,6 +433,7 @@ fn draw_status(f: &mut Frame<'_>, palette: &Palette, app: &App, area: Rect) {
                 ("PgUp/PgDn", "scroll"),
                 ("i", "compose"),
                 ("t", "theme"),
+                ("O", "sign out"),
                 ("n", notify.as_str()),
                 ("q", "quit"),
             ],

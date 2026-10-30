@@ -30,6 +30,8 @@ A `CLIENT_ID` environment variable overrides the saved client ID.
 | `Esc` | Cancel compose |
 | `n` | Cycle new-message notifications: none, terminal bell, desktop, both |
 | `t` | Pick a theme: move to preview, `Tab` for dark or light, `Enter` to keep, `Esc` to cancel |
+| `O` | Sign out, then sign in again, as the same or another account |
+| `c` | On the sign-in screen, change the client ID |
 | `q` | Quit |
 | `Ctrl+C` | Quit from any screen |
 
@@ -39,7 +41,7 @@ Starling has the 50 themes from [orangui](https://github.com/scadoshi/orangui), 
 
 ## Files
 
-The config folder is `~/Library/Application Support/starling/` on macOS and `~/.config/starling/` on Linux. It holds `config.json`, `token.json` and `profile.json`, all readable by your user only. Delete `token.json` to sign in again, and `profile.json` too if you switch accounts.
+The config folder is `~/Library/Application Support/starling/` on macOS and `~/.config/starling/` on Linux. It holds `config.json`, `token.json` and `profile.json`, all readable by your user only. Signing out with `O` deletes `token.json` and `profile.json`; the client ID stays.
 
 ## Development
 

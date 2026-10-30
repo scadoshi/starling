@@ -150,6 +150,14 @@ fn load_token() -> Result<Option<TokenResponse>> {
     Ok(Some(serde_json::from_str(&fs::read_to_string(path)?)?))
 }
 
+/// Forgets the signed-in account: deletes the saved token and the cached profile.
+///
+/// The client ID stays, so the next sign-in uses the same app.
+pub(crate) fn sign_out() -> Result<()> {
+    config::remove(&token_path()?)?;
+    crate::api::forget_profile()
+}
+
 /// Asks Microsoft for a device code to show the user.
 pub(crate) async fn start_device_flow(client_id: &str) -> Result<DeviceCode> {
     let response = CLIENT
