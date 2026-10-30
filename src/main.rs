@@ -40,15 +40,15 @@ async fn main() -> Result<()> {
 async fn startup() -> Result<(App, ChatOrder)> {
     println!("Starling\n");
 
-    let access_token = auth::get_access_token().await.context("Sign-in failed")?;
-    let me = api::get_me(&access_token).await;
+    let access_token = auth::fetch_access_token().await.context("Sign-in failed")?;
+    let me = api::fetch_me(&access_token).await;
     match &me {
         Ok(user) => println!("Signed in as {}", message::sanitize(&user.display_name)),
         Err(e) => println!("Signed in, but could not fetch your profile: {e:#}"),
     }
 
     println!("Fetching chats...");
-    let mut chats = api::get_chats(&access_token)
+    let mut chats = api::fetch_chats(&access_token)
         .await
         .context("Failed to fetch chats")?;
 
@@ -75,7 +75,7 @@ async fn last_message_times(access_token: &str, chats: &[Chat]) -> HashMap<Strin
             let token = access_token.to_owned();
             let chat_id = chat.id.clone();
             tokio::spawn(async move {
-                let messages = api::get_messages(&token, &chat_id).await.ok()?;
+                let messages = api::fetch_messages(&token, &chat_id).await.ok()?;
                 let time = app::newest(&messages)?.created_date_time.clone();
                 Some((chat_id, time))
             })

@@ -267,10 +267,10 @@ impl EventLoop {
         for request in mem::take(&mut self.pending) {
             let tx = self.tx.clone();
             tokio::spawn(async move {
-                let Ok(token) = auth::get_valid_token_silent().await else {
+                let Ok(token) = auth::fetch_token_silently().await else {
                     return;
                 };
-                if let Some(update) = fetch(&token, request).await {
+                if let Some(update) = fetch_update(&token, request).await {
                     tx.send(update).ok();
                 }
             });
@@ -284,8 +284,8 @@ impl EventLoop {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                if let Ok(token) = auth::get_valid_token_silent().await
-                    && let Some(update) = fetch(&token, Request::Chats).await
+                if let Ok(token) = auth::fetch_token_silently().await
+                    && let Some(update) = fetch_update(&token, Request::Chats).await
                     && tx.send(update).is_err()
                 {
                     return;
@@ -321,15 +321,15 @@ fn handle_browse_key(app: &mut App, code: KeyCode) -> Flow {
 }
 
 /// Runs one request. Failures are dropped, except a failed send, which comes back as a status.
-async fn fetch(token: &str, request: Request) -> Option<Update> {
+async fn fetch_update(token: &str, request: Request) -> Option<Update> {
     match request {
-        Request::Chats => api::get_chats(token).await.ok().map(Update::Chats),
+        Request::Chats => api::fetch_chats(token).await.ok().map(Update::Chats),
         Request::Messages(chat_id) => {
-            let messages = api::get_messages(token, &chat_id).await.ok()?;
+            let messages = api::fetch_messages(token, &chat_id).await.ok()?;
             Some(Update::Messages { chat_id, messages })
         }
         Request::Newest(chat_id) => {
-            let messages = api::get_messages(token, &chat_id).await.ok()?;
+            let messages = api::fetch_messages(token, &chat_id).await.ok()?;
             let message = app::newest(&messages)?.clone();
             Some(Update::Newest { chat_id, message })
         }
@@ -338,7 +338,7 @@ async fn fetch(token: &str, request: Request) -> Option<Update> {
             None
         }
         Request::Send { chat_id, text } => match api::send_message(token, &chat_id, &text).await {
-            Ok(()) => Box::pin(fetch(token, Request::Messages(chat_id))).await,
+            Ok(()) => Box::pin(fetch_update(token, Request::Messages(chat_id))).await,
             Err(e) => Some(Update::Status(format!("{e:#}"))),
         },
     }

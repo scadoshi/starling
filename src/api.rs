@@ -143,7 +143,7 @@ struct Organization {
     id: String,
 }
 
-async fn get_json<T: DeserializeOwned>(access_token: &str, path: &str) -> Result<T> {
+async fn fetch_json<T: DeserializeOwned>(access_token: &str, path: &str) -> Result<T> {
     let response = CLIENT
         .get(format!("{GRAPH_API_BASE}{path}"))
         .bearer_auth(access_token)
@@ -175,12 +175,12 @@ fn save_profile(user: &User) -> Result<()> {
 }
 
 /// The signed-in user, from `profile.json` when it is cached there.
-pub(crate) async fn get_me(access_token: &str) -> Result<User> {
+pub(crate) async fn fetch_me(access_token: &str) -> Result<User> {
     if let Ok(Some(user)) = load_profile() {
         return Ok(user);
     }
 
-    let user: User = get_json(access_token, "/me")
+    let user: User = fetch_json(access_token, "/me")
         .await
         .context("Failed to get user profile")?;
     // The cache only saves a request next time, so failing to write it is not an error.
@@ -189,8 +189,9 @@ pub(crate) async fn get_me(access_token: &str) -> Result<User> {
 }
 
 /// The chat's messages, newest first.
-pub(crate) async fn get_messages(access_token: &str, chat_id: &str) -> Result<Vec<Message>> {
-    let page: Page<Message> = get_json(access_token, &format!("/chats/{chat_id}/messages")).await?;
+pub(crate) async fn fetch_messages(access_token: &str, chat_id: &str) -> Result<Vec<Message>> {
+    let page: Page<Message> =
+        fetch_json(access_token, &format!("/chats/{chat_id}/messages")).await?;
     Ok(page.value)
 }
 
@@ -215,10 +216,10 @@ pub(crate) async fn send_message(access_token: &str, chat_id: &str, content: &st
 
 /// Marks the chat read for the signed-in user. Best effort: any failure is ignored.
 pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) {
-    let Ok(user) = get_me(access_token).await else {
+    let Ok(user) = fetch_me(access_token).await else {
         return;
     };
-    let Ok(organizations) = get_json::<Page<Organization>>(access_token, "/organization").await
+    let Ok(organizations) = fetch_json::<Page<Organization>>(access_token, "/organization").await
     else {
         return;
     };
@@ -244,14 +245,14 @@ pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) {
 }
 
 /// Every chat of the signed-in user, with members and a display name filled in.
-pub(crate) async fn get_chats(access_token: &str) -> Result<Vec<Chat>> {
-    let mut chats = get_json::<Page<Chat>>(access_token, "/me/chats")
+pub(crate) async fn fetch_chats(access_token: &str) -> Result<Vec<Chat>> {
+    let mut chats = fetch_json::<Page<Chat>>(access_token, "/me/chats")
         .await?
         .value;
 
     for chat in &mut chats {
         chat.members =
-            get_json::<Page<ChatMember>>(access_token, &format!("/chats/{}/members", chat.id))
+            fetch_json::<Page<ChatMember>>(access_token, &format!("/chats/{}/members", chat.id))
                 .await
                 .map(|page| page.value)
                 .unwrap_or_default();

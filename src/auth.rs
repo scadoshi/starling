@@ -152,7 +152,7 @@ async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
 }
 
 /// An access token from the saved token, refreshed when it is near expiry, without asking the user.
-pub(crate) async fn get_valid_token_silent() -> Result<String> {
+pub(crate) async fn fetch_token_silently() -> Result<String> {
     let token = load_token()?.context("Not signed in")?;
     if token.expires_at > now_secs()?.saturating_add(EXPIRY_MARGIN_SECS) {
         return Ok(token.access_token);
@@ -168,8 +168,8 @@ pub(crate) async fn get_valid_token_silent() -> Result<String> {
     clippy::print_stdout,
     reason = "the sign-in prompt prints before the TUI takes the terminal"
 )]
-pub(crate) async fn get_access_token() -> Result<String> {
-    if let Ok(token) = get_valid_token_silent().await {
+pub(crate) async fn fetch_access_token() -> Result<String> {
+    if let Ok(token) = fetch_token_silently().await {
         return Ok(token);
     }
 
