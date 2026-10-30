@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
-use ratatui::Frame;
 
 use crate::app::App;
 
@@ -299,16 +299,14 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                                     || tag_str.contains("type='messageReference'")
                                     || tag_str.contains("messageReference");
 
-                                if !is_message_reference {
-                                    if let Some(id_start) = tag_str.find("id=\"") {
-                                        let value_start = id_start + 4;
-                                        if let Some(id_end) = tag_str[value_start..].find('"') {
-                                            let attachment_id = tag_str
-                                                [value_start..value_start + id_end]
-                                                .to_string();
-                                            segments
-                                                .push(MessageSegment::Attachment(attachment_id));
-                                        }
+                                if !is_message_reference
+                                    && let Some(id_start) = tag_str.find("id=\"")
+                                {
+                                    let value_start = id_start + 4;
+                                    if let Some(id_end) = tag_str[value_start..].find('"') {
+                                        let attachment_id =
+                                            tag_str[value_start..value_start + id_end].to_string();
+                                        segments.push(MessageSegment::Attachment(attachment_id));
                                     }
                                 }
 
@@ -335,10 +333,10 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
 
                                 // Handle closing tag
                                 remaining = &remaining[tag_end + 1..];
-                                if remaining.starts_with("</emoji") {
-                                    if let Some(close_end) = remaining.find('>') {
-                                        remaining = &remaining[close_end + 1..];
-                                    }
+                                if remaining.starts_with("</emoji")
+                                    && let Some(close_end) = remaining.find('>')
+                                {
+                                    remaining = &remaining[close_end + 1..];
                                 }
                             }
                             _ => {
@@ -524,11 +522,11 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                         let mut name = None;
                         let mut content_type = None;
 
-                        if let Some(api_attachments) = &msg.attachments {
-                            if let Some(api_att) = api_attachments.iter().find(|a| a.id == id) {
-                                name = api_att.name.clone();
-                                content_type = api_att.content_type.clone();
-                            }
+                        if let Some(api_attachments) = &msg.attachments
+                            && let Some(api_att) = api_attachments.iter().find(|a| a.id == id)
+                        {
+                            name = api_att.name.clone();
+                            content_type = api_att.content_type.clone();
                         }
 
                         let attachment_name = name.unwrap_or_else(|| "Attachment".to_string());
@@ -554,8 +552,8 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
 
             // If no segments produced lines (empty message), add empty line
             if lines.is_empty() || (show_header && lines.len() == 1) { // 1 for header
-                 // Check if we actually added any content lines for this message
-                 // This is a bit rough, but ensures we don't have invisible messages
+                // Check if we actually added any content lines for this message
+                // This is a bit rough, but ensures we don't have invisible messages
             }
         }
 

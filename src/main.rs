@@ -13,11 +13,11 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use notify_rust::Notification;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::app::{App, NotificationMode};
 
@@ -74,27 +74,28 @@ async fn main() -> Result<()> {
         let chat_id = chat.id.clone();
         let token = access_token.clone();
         tasks.push(tokio::spawn(async move {
-            if let Ok(messages) = api::get_messages(&token, &chat_id).await {
-                if messages.is_empty() {
-                    None
-                } else {
-                    // Messages are returned in chronological order (oldest first) based on UI code using .rev()
-                    // So the last message in the array is the most recent
-                    // But let's be safe and compare first vs last to get the most recent
-                    let first = messages.first().unwrap();
-                    let last = messages.last().unwrap();
-
-                    // Use whichever is more recent (later timestamp)
-                    let most_recent = if last.created_date_time > first.created_date_time {
-                        last
+            match api::get_messages(&token, &chat_id).await {
+                Ok(messages) => {
+                    if messages.is_empty() {
+                        None
                     } else {
-                        first
-                    };
+                        // Messages are returned in chronological order (oldest first) based on UI code using .rev()
+                        // So the last message in the array is the most recent
+                        // But let's be safe and compare first vs last to get the most recent
+                        let first = messages.first().unwrap();
+                        let last = messages.last().unwrap();
 
-                    Some((chat_id, most_recent.created_date_time.clone()))
+                        // Use whichever is more recent (later timestamp)
+                        let most_recent = if last.created_date_time > first.created_date_time {
+                            last
+                        } else {
+                            first
+                        };
+
+                        Some((chat_id, most_recent.created_date_time.clone()))
+                    }
                 }
-            } else {
-                None
+                _ => None,
             }
         }));
     }
@@ -154,10 +155,10 @@ async fn main() -> Result<()> {
     }
 
     // Load config and apply notification mode
-    if let Some(config) = crate::config::load_config() {
-        if let Some(mode) = config.notification_mode {
-            app.notification_mode = mode;
-        }
+    if let Some(config) = crate::config::load_config()
+        && let Some(mode) = config.notification_mode
+    {
+        app.notification_mode = mode;
     }
 
     // Run app (pass the initial message times we loaded and access token for background tasks)
@@ -224,10 +225,10 @@ async fn run_app(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if let Ok(token) = auth::get_valid_token_silent().await {
-                if let Ok(result) = api::get_chats(&token).await {
-                    let _ = tx_chats_clone.send(result);
-                }
+            if let Ok(token) = auth::get_valid_token_silent().await
+                && let Ok(result) = api::get_chats(&token).await
+            {
+                let _ = tx_chats_clone.send(result);
             }
         }
     });
@@ -243,10 +244,10 @@ async fn run_app(
 
         app.set_loading_messages(true);
         tokio::spawn(async move {
-            if let Ok(token) = auth::get_valid_token_silent().await {
-                if let Ok(messages) = api::get_messages(&token, &chat_id).await {
-                    let _ = tx_clone.send((chat_index, messages));
-                }
+            if let Ok(token) = auth::get_valid_token_silent().await
+                && let Ok(messages) = api::get_messages(&token, &chat_id).await
+            {
+                let _ = tx_clone.send((chat_index, messages));
             }
         });
     }
@@ -281,13 +282,12 @@ async fn run_app(
 
                 // Load last message for this chat to check if there's a new one
                 tokio::spawn(async move {
-                    if let Ok(token) = auth::get_valid_token_silent().await {
-                        if let Ok(messages) = api::get_messages(&token, &chat_id_clone).await {
-                            if let Some(last_msg) = messages.last() {
-                                // Send the last message - the main loop will check if it's new
-                                let _ = tx_new_clone.send((chat_id_clone, last_msg.clone()));
-                            }
-                        }
+                    if let Ok(token) = auth::get_valid_token_silent().await
+                        && let Ok(messages) = api::get_messages(&token, &chat_id_clone).await
+                        && let Some(last_msg) = messages.last()
+                    {
+                        // Send the last message - the main loop will check if it's new
+                        let _ = tx_new_clone.send((chat_id_clone, last_msg.clone()));
                     }
                 });
             }
@@ -339,10 +339,10 @@ async fn run_app(
                 let tx_clone = tx.clone();
 
                 tokio::spawn(async move {
-                    if let Ok(token) = auth::get_valid_token_silent().await {
-                        if let Ok(messages) = api::get_messages(&token, &chat_id).await {
-                            let _ = tx_clone.send((chat_index, messages));
-                        }
+                    if let Ok(token) = auth::get_valid_token_silent().await
+                        && let Ok(messages) = api::get_messages(&token, &chat_id).await
+                    {
+                        let _ = tx_clone.send((chat_index, messages));
                     }
                 });
             }
@@ -362,10 +362,10 @@ async fn run_app(
                     let tx_clone = tx.clone();
 
                     tokio::spawn(async move {
-                        if let Ok(token) = auth::get_valid_token_silent().await {
-                            if let Ok(messages) = api::get_messages(&token, &chat_id).await {
-                                let _ = tx_clone.send((chat_index, messages));
-                            }
+                        if let Ok(token) = auth::get_valid_token_silent().await
+                            && let Ok(messages) = api::get_messages(&token, &chat_id).await
+                        {
+                            let _ = tx_clone.send((chat_index, messages));
                         }
                     });
                 }
@@ -439,10 +439,10 @@ async fn run_app(
                 // This ensures the chat list updates immediately when a new message is detected
                 let tx_chats_refresh = tx_chats.clone();
                 tokio::spawn(async move {
-                    if let Ok(token) = auth::get_valid_token_silent().await {
-                        if let Ok(result) = api::get_chats(&token).await {
-                            let _ = tx_chats_refresh.send(result);
-                        }
+                    if let Ok(token) = auth::get_valid_token_silent().await
+                        && let Ok(result) = api::get_chats(&token).await
+                    {
+                        let _ = tx_chats_refresh.send(result);
                     }
                 });
 
@@ -507,13 +507,12 @@ async fn run_app(
                             .insert(chat_id.clone(), last_msg.created_date_time.clone());
 
                         // If new message detected, move chat to top of stable order
-                        if is_new {
-                            if let Some(pos) =
+                        if is_new
+                            && let Some(pos) =
                                 stable_chat_order.iter().position(|id| id == &chat_id)
-                            {
-                                stable_chat_order.remove(pos);
-                                stable_chat_order.insert(0, chat_id);
-                            }
+                        {
+                            stable_chat_order.remove(pos);
+                            stable_chat_order.insert(0, chat_id);
                         }
                     }
 
@@ -538,126 +537,121 @@ async fn run_app(
         terminal.draw(|f| ui::draw(f, app))?;
 
         // Use poll with timeout to allow checking for messages
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                let previous_index = app.selected_index;
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            let previous_index = app.selected_index;
 
-                match key.code {
-                    KeyCode::Char('q') if !app.input_mode => return Ok(()),
-                    KeyCode::Down | KeyCode::Char('j') if !app.input_mode => app.next_chat(),
-                    KeyCode::Up | KeyCode::Char('k') if !app.input_mode => app.previous_chat(),
-                    KeyCode::Char('n') if !app.input_mode => {
-                        app.toggle_notification_mode();
-                        // Save config
-                        let mut config = crate::config::load_config().unwrap_or_default();
-                        config.notification_mode = Some(app.notification_mode);
-                        let _ = crate::config::save_config(&config);
-                    }
-                    KeyCode::Char('i') if !app.input_mode => {
-                        app.input_mode = true;
-                        app.input_buffer.clear();
-                    }
-                    KeyCode::Esc if app.input_mode => {
-                        app.input_mode = false;
-                        app.input_buffer.clear();
-                    }
-                    // Handle Alt+Enter for newline (most reliable method)
-                    KeyCode::Enter
-                        if app.input_mode && key.modifiers.contains(KeyModifiers::ALT) =>
-                    {
-                        // Alt+Enter = new line
+            match key.code {
+                KeyCode::Char('q') if !app.input_mode => return Ok(()),
+                KeyCode::Down | KeyCode::Char('j') if !app.input_mode => app.next_chat(),
+                KeyCode::Up | KeyCode::Char('k') if !app.input_mode => app.previous_chat(),
+                KeyCode::Char('n') if !app.input_mode => {
+                    app.toggle_notification_mode();
+                    // Save config
+                    let mut config = crate::config::load_config().unwrap_or_default();
+                    config.notification_mode = Some(app.notification_mode);
+                    let _ = crate::config::save_config(&config);
+                }
+                KeyCode::Char('i') if !app.input_mode => {
+                    app.input_mode = true;
+                    app.input_buffer.clear();
+                }
+                KeyCode::Esc if app.input_mode => {
+                    app.input_mode = false;
+                    app.input_buffer.clear();
+                }
+                // Handle Alt+Enter for newline (most reliable method)
+                KeyCode::Enter if app.input_mode && key.modifiers.contains(KeyModifiers::ALT) => {
+                    // Alt+Enter = new line
+                    app.input_buffer.push('\n');
+                }
+                KeyCode::Enter if app.input_mode => {
+                    // Check for Shift or Ctrl modifiers (may not work in all terminals)
+                    let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                    let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+                    if has_shift || has_ctrl {
+                        // Shift+Enter or Ctrl+Enter = new line
                         app.input_buffer.push('\n');
-                    }
-                    KeyCode::Enter if app.input_mode => {
-                        // Check for Shift or Ctrl modifiers (may not work in all terminals)
-                        let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                        let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    } else {
+                        // Enter without modifiers = send message
+                        if !app.input_buffer.is_empty() {
+                            let message = app.input_buffer.clone();
+                            app.input_buffer.clear();
+                            app.input_mode = false;
 
-                        if has_shift || has_ctrl {
-                            // Shift+Enter or Ctrl+Enter = new line
-                            app.input_buffer.push('\n');
-                        } else {
-                            // Enter without modifiers = send message
-                            if !app.input_buffer.is_empty() {
-                                let message = app.input_buffer.clone();
-                                app.input_buffer.clear();
-                                app.input_mode = false;
+                            // Send message logic
+                            if let Some(chat) = app.get_selected_chat() {
+                                let chat_id = chat.id.clone();
+                                let chat_index = app.selected_index;
+                                let tx = tx.clone();
+                                let tx_chats = tx_chats.clone(); // Clone for refresh
 
-                                // Send message logic
-                                if let Some(chat) = app.get_selected_chat() {
-                                    let chat_id = chat.id.clone();
-                                    let chat_index = app.selected_index;
-                                    let tx = tx.clone();
-                                    let tx_chats = tx_chats.clone(); // Clone for refresh
-
-                                    tokio::spawn(async move {
-                                        if let Ok(token) = auth::get_valid_token_silent().await {
-                                            match api::send_message(&token, &chat_id, &message)
-                                                .await
-                                            {
-                                                Ok(()) => {
-                                                    // Reload messages
-                                                    if let Ok(messages) =
-                                                        api::get_messages(&token, &chat_id).await
-                                                    {
-                                                        let _ = tx.send((chat_index, messages));
-                                                    }
-                                                    // Refresh chat list to update last message preview
-                                                    if let Ok(chats) = api::get_chats(&token).await
-                                                    {
-                                                        let _ = tx_chats.send(chats);
-                                                    }
+                                tokio::spawn(async move {
+                                    if let Ok(token) = auth::get_valid_token_silent().await {
+                                        match api::send_message(&token, &chat_id, &message).await {
+                                            Ok(()) => {
+                                                // Reload messages
+                                                if let Ok(messages) =
+                                                    api::get_messages(&token, &chat_id).await
+                                                {
+                                                    let _ = tx.send((chat_index, messages));
                                                 }
-                                                Err(e) => {
-                                                    eprintln!("Failed to send message: {e}");
+                                                // Refresh chat list to update last message preview
+                                                if let Ok(chats) = api::get_chats(&token).await {
+                                                    let _ = tx_chats.send(chats);
                                                 }
                                             }
+                                            Err(e) => {
+                                                eprintln!("Failed to send message: {e}");
+                                            }
                                         }
-                                    });
-                                    app.snap_to_bottom = true;
-                                }
+                                    }
+                                });
+                                app.snap_to_bottom = true;
                             }
                         }
                     }
-                    KeyCode::Backspace if app.input_mode => {
-                        app.input_buffer.pop();
-                    }
-                    KeyCode::Char(c) if app.input_mode => {
-                        app.input_buffer.push(c);
-                    }
-                    KeyCode::PageUp | KeyCode::Char('K') => {
-                        app.snap_to_bottom = false;
-                        app.scroll_offset = app.scroll_offset.saturating_sub(10);
-                    }
-                    KeyCode::PageDown | KeyCode::Char('J') => {
-                        app.scroll_offset = app.scroll_offset.saturating_add(10);
-                        if app.scroll_offset >= app.max_scroll {
-                            app.snap_to_bottom = true;
-                        }
-                    }
-                    _ => {}
                 }
-
-                // If selection changed, spawn a background task to load messages
-                if previous_index != app.selected_index {
-                    if let Some(chat) = app.get_selected_chat() {
-                        let chat_id = chat.id.clone();
-                        let chat_index = app.selected_index;
-                        let tx_clone = tx.clone();
-
-                        app.set_loading_messages(true);
-                        app.set_messages(Vec::new()); // Clear old messages immediately
-                        app.snap_to_bottom = true; // Snap to bottom for new chat
-
-                        tokio::spawn(async move {
-                            if let Ok(token) = auth::get_valid_token_silent().await {
-                                if let Ok(messages) = api::get_messages(&token, &chat_id).await {
-                                    let _ = tx_clone.send((chat_index, messages));
-                                }
-                            }
-                        });
+                KeyCode::Backspace if app.input_mode => {
+                    app.input_buffer.pop();
+                }
+                KeyCode::Char(c) if app.input_mode => {
+                    app.input_buffer.push(c);
+                }
+                KeyCode::PageUp | KeyCode::Char('K') => {
+                    app.snap_to_bottom = false;
+                    app.scroll_offset = app.scroll_offset.saturating_sub(10);
+                }
+                KeyCode::PageDown | KeyCode::Char('J') => {
+                    app.scroll_offset = app.scroll_offset.saturating_add(10);
+                    if app.scroll_offset >= app.max_scroll {
+                        app.snap_to_bottom = true;
                     }
                 }
+                _ => {}
+            }
+
+            // If selection changed, spawn a background task to load messages
+            if previous_index != app.selected_index
+                && let Some(chat) = app.get_selected_chat()
+            {
+                let chat_id = chat.id.clone();
+                let chat_index = app.selected_index;
+                let tx_clone = tx.clone();
+
+                app.set_loading_messages(true);
+                app.set_messages(Vec::new()); // Clear old messages immediately
+                app.snap_to_bottom = true; // Snap to bottom for new chat
+
+                tokio::spawn(async move {
+                    if let Ok(token) = auth::get_valid_token_silent().await
+                        && let Ok(messages) = api::get_messages(&token, &chat_id).await
+                    {
+                        let _ = tx_clone.send((chat_index, messages));
+                    }
+                });
             }
         }
     }

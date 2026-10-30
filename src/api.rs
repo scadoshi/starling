@@ -279,10 +279,9 @@ pub(crate) async fn mark_chat_as_read(access_token: &str, chat_id: &str) -> Resu
                 id: String,
             }
 
-            if let Ok(org_data) = org_response.json::<OrgResponse>().await {
-                org_data.value.first().map(|org| org.id.clone())
-            } else {
-                None
+            match org_response.json::<OrgResponse>().await {
+                Ok(org_data) => org_data.value.first().map(|org| org.id.clone()),
+                _ => None,
             }
         }
         _ => None,

@@ -153,10 +153,10 @@ pub(crate) async fn get_valid_token_silent() -> Result<String> {
         }
 
         // Try to refresh if we have a refresh token
-        if let Some(refresh_token) = token.refresh_token {
-            if let Ok(new_token) = refresh_access_token(&refresh_token).await {
-                return Ok(new_token.access_token);
-            }
+        if let Some(refresh_token) = token.refresh_token
+            && let Ok(new_token) = refresh_access_token(&refresh_token).await
+        {
+            return Ok(new_token.access_token);
         }
     }
     anyhow::bail!("No valid token found and refresh failed")
