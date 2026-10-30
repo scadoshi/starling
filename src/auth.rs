@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 fn get_client_id() -> Result<String> {
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
     if let Ok(id) = std::env::var("CLIENT_ID") {
         return Ok(id);
     }
