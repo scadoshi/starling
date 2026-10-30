@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::message::sanitize;
+use crate::message;
 
 const GRAPH_API_BASE: &str = "https://graph.microsoft.com/v1.0";
 
@@ -266,7 +266,7 @@ pub(crate) async fn fetch_chats(access_token: &str) -> Result<Vec<Chat>> {
     }
 
     for chat in &mut chats {
-        chat.display_name = sanitize(&display_name(chat));
+        chat.display_name = message::sanitize(&display_name(chat));
     }
     Ok(chats)
 }

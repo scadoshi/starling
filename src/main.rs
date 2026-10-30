@@ -13,9 +13,7 @@ use std::io::{self, Stdout};
 
 use anyhow::{Context, Result};
 use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -98,7 +96,7 @@ struct Tui {
 
 impl Tui {
     fn enter() -> Result<Self> {
-        enable_raw_mode()?;
+        terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
         Ok(Self {
@@ -109,7 +107,7 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        disable_raw_mode().ok();
+        terminal::disable_raw_mode().ok();
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen).ok();
         self.terminal.show_cursor().ok();
     }
