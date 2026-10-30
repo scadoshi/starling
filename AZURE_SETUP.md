@@ -43,7 +43,6 @@ After registration, you'll see the **Overview** page:
 4. Select **Delegated permissions**
 5. **IMPORTANT**: Search for and add these **exact** permissions:
    - Type `User.Read` and check the box
-   - Type `Chat.Read` and check the box
    - Type `Chat.ReadWrite` and check the box  
    - Type `offline_access` and check the box
    
@@ -53,15 +52,14 @@ After registration, you'll see the **Overview** page:
 7. *Optional*: Click **Grant admin consent for [Your Organization]** (if you're an admin)
 
 **After adding permissions, your API permissions list should show:**
-- Microsoft Graph (4):
+- Microsoft Graph (3):
   - User.Read
-  - Chat.Read
   - Chat.ReadWrite
   - offline_access
 
 ### Troubleshooting: "Invalid Scope" Error
 
-If you get an error like `The scope 'Chat.Read Chat.ReadWrite offline_access' does not exist`, it means:
+If you get an error like `The scope 'User.Read Chat.ReadWrite offline_access' does not exist`, it means:
 
 1. **You haven't added the permissions yet** - Go back to step 5 and add them
 2. **You added Application permissions instead of Delegated** - Remove them and add Delegated permissions
@@ -74,7 +72,7 @@ If you get this error, you're missing the `User.Read` permission:
 1. Go to **API permissions** in Azure Portal
 2. Click **+ Add a permission** → **Microsoft Graph** → **Delegated permissions**
 3. Search for and add `User.Read`
-4. **Delete your saved token**: `rm ~/.config/starling/token.json`
+4. **Delete your saved token**: `rm ~/.config/starling/token.json` on Linux, `rm ~/Library/Application\ Support/starling/token.json` on macOS
 5. Run the app again and re-authenticate
 
 ### 6. Update Your Application
@@ -84,7 +82,7 @@ See the **README.md** for instructions on setting the Client ID (Quick Start, po
 ### 7. Run the Application
 
 ```bash
-cargo run
+starling
 ```
 
 Now the authentication should work!
@@ -102,6 +100,5 @@ A: Go to https://entra.microsoft.com/ or https://portal.azure.com/
 
 ## What Permissions Mean
 
-- **Chat.Read**: Read your Teams chat messages
 - **Chat.ReadWrite**: Read and send Teams chat messages
 - **offline_access**: Keep you logged in (refresh tokens)

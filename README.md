@@ -1,113 +1,51 @@
 # Starling
 
-A terminal client for Microsoft Teams chats, written in Rust with [ratatui](https://ratatui.rs), built around keyboard-driven navigation.  
-Use arrow keys (or h/j) to switch chats, press *i* to enter message-input mode, and enjoy a fast, distraction-free Teams experience inside the terminal.
+Microsoft Teams chats in the terminal, built on [ratatui](https://ratatui.rs). Read and send chat messages without opening the Teams app.
 
 ![Starling](assets/images/tt.png)
 
-## Features
+Starling signs in with Microsoft's device-code flow against an Azure app you register yourself, and talks only to `login.microsoftonline.com` and `graph.microsoft.com`. It asks for `User.Read`, `Chat.ReadWrite` and `offline_access`, nothing else.
 
-- 🔐 Secure OAuth2 authentication (Device Code Flow)
-- 💬 View your Teams chats
-- ⌨️ Keyboard navigation (Vim-style or arrow keys)
-- 🎨 Modern, colorful terminal UI
-- 💾 Token persistence (no need to re-authenticate)
+## Setup
 
-## Quick Start
+1. Register an Azure app and copy its client ID. [AZURE_SETUP.md](AZURE_SETUP.md) walks through it. If your organization blocks app registrations, your IT admin has to do this step.
+2. Put the client ID in `config.json` in Starling's config folder: `~/Library/Application Support/starling/` on macOS, `~/.config/starling/` on Linux.
 
-**Important:** You need to register your own Azure AD application first!  
-(or if you already have one, you can skip to step 2)
+   ```json
+   { "client_id": "your-client-id" }
+   ```
 
-### 1. Register Azure AD App
+   A `CLIENT_ID` environment variable, or a `.env` file in the directory you run from, works too and takes precedence.
+3. Install and run:
 
-Follow the detailed guide in [AZURE_SETUP.md](AZURE_SETUP.md) to:
-- Register an app in Azure Portal
-- Get your Client ID
-- Configure permissions
+   ```bash
+   cargo install --git https://github.com/scadoshi/starling
+   starling
+   ```
 
-### 2. Configure the App
+The first run prints a URL and a code. Open the URL, enter the code, and sign in. The token is saved and refreshed after that.
 
-#### 2.1. Using `config.json`
-Create a `config.json` file in `~/.config/starling/` directory:
-```json
-{
-  "client_id": "your-client-id-here"
-}
-```
-Replace `your-client-id-here` with your actual Client ID from Azure.
+## Keys
 
-#### 2.2. Using `.env` file
-Alternatively, you can use a `.env` file.
+| Key | Action |
+| --- | --- |
+| `j` / `k` or arrows | Next / previous chat |
+| `PgDn` / `PgUp` or `J` / `K` | Scroll messages |
+| `i` | Compose |
+| `Enter` | Send |
+| `Alt+Enter` | New line |
+| `Esc` | Cancel compose |
+| `n` | Cycle new-message notifications: none, terminal bell, desktop, both |
+| `q` | Quit |
 
-Create a `.env` file in this directory:
-```bash
-cp .env.example .env
-```
+## Files
 
-Replace `your-client-id-here` with your actual Client ID from Azure.
+The config folder holds `config.json`, `token.json` and `profile.json`, all readable by your user only. Delete `token.json` to sign in again, and `profile.json` too if you switch accounts.
 
-### 3. Run the Application
+## Development
 
-```bash
-# Run the application
-cargo run
-
-# Or build and run the binary
-cargo build --release
-./target/release/starling
-
-# you can also copy binary wherever you want, eg
-cp ./target/release/starling /usr/local/bin/starling
-# and run from anywhere
-starling
-```
-**Imoportant:** If you use `.env` file, make sure to run the app from the same directory where `.env` is located (still preferred way is to use `config.json` for settings).
-
-## First Time Setup
-
-1. Run the app
-2. Open the displayed URL in your browser
-3. Enter the code shown in the terminal
-4. Sign in with your Microsoft account
-5. Grant permissions
-
-## Keyboard Controls
-
-- `↑` / `k` - Move up
-- `↓` / `j` - Move down  
-- `PgUp` / `PgDn` / `K` / `J` - Scroll chat
-- `i` - Compose message
-- `n` - Toggle notifications (None/Console/System/Both)
-- `q` - Quit
-
-## Requirements
-
-- Rust 1.70+ (2021 edition)
-- Microsoft account with Teams access
-
-## How It Works
-
-This app uses:
-- **Microsoft Graph API** to fetch Teams data
-- **Ratatui** for the terminal UI
-- **OAuth2 Device Code Flow** for authentication
-
-Tokens are saved to `~/.config/starling/token.json` and automatically refreshed.
-
-Your profile is saved to `~/.config/starling/profile.json` (limits API calls).
-
-If at some point you want/need to re-authenticate, just delete the `token.json` file (and eventually `profile.json`).
-
-## TODO
-
-- [ ] Showing images
-- [ ] Yanking urls (eventually adding some kind of vim mode to select/yank any text)
-- [x] Notification when new message will arrive (Console/System/Both modes added)
-
-## License
-
-Starling is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+Needs Rust 1.88 or newer. Formatting uses nightly rustfmt; see [context/development/commit_guidelines.md](context/development/commit_guidelines.md) for the checks CI runs.
 
 ## Credits
 
-Starling started as a fork of [nospor/teams-tui](https://github.com/nospor/teams-tui) by nospor, who wrote the original client.
+Starling started as a fork of [nospor/teams-tui](https://github.com/nospor/teams-tui) by nospor, who wrote the original client. MIT licensed; see [LICENSE](LICENSE).
