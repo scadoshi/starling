@@ -1,6 +1,6 @@
 //! Microsoft Graph calls: the signed-in user, chats, their members and messages.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -272,11 +272,11 @@ pub(crate) async fn get_chats(access_token: &str) -> Result<Vec<Chat>> {
 
 /// Guesses the signed-in user as the member who appears in the most one-on-one chats.
 ///
-/// Needs two appearances, unless there is only one such chat.
+/// Needs a single leader with two appearances, or one such chat. A tie gives no guess.
 fn detect_current_user(chats: &[Chat]) -> Option<String> {
     let one_on_one: Vec<&Chat> = chats.iter().filter(|c| c.kind == "oneOnOne").collect();
 
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for member in one_on_one.iter().flat_map(|c| &c.members) {
         if let Some(name) = member.display_name.as_deref() {
             let count = counts.entry(name).or_default();
@@ -284,8 +284,11 @@ fn detect_current_user(chats: &[Chat]) -> Option<String> {
         }
     }
 
-    let (name, count) = counts.into_iter().max_by_key(|&(_, count)| count)?;
-    (count >= 2 || one_on_one.len() == 1).then(|| name.to_owned())
+    let top = counts.values().copied().max()?;
+    let mut leaders = counts.into_iter().filter(|&(_, count)| count == top);
+    let (name, _) = leaders.next()?;
+    let unique = leaders.next().is_none();
+    (unique && (top >= 2 || one_on_one.len() == 1)).then(|| name.to_owned())
 }
 
 /// The name for the chat list: the other person in a one-on-one, else the topic, else up to three members, else a placeholder.
@@ -402,6 +405,16 @@ mod tests {
         ];
         assert_eq!(detect_current_user(&chats).as_deref(), Some("Me"));
         assert_eq!(detect_current_user(&chats[2..]), None);
+    }
+
+    #[test]
+    fn detect_current_user_does_not_guess_on_a_tie() {
+        let chats = [chat_of("oneOnOne", None, &["Me", "Ann"])];
+        for _ in 0..32 {
+            assert_eq!(detect_current_user(&chats), None);
+        }
+        let alone = [chat_of("oneOnOne", None, &["Me"])];
+        assert_eq!(detect_current_user(&alone).as_deref(), Some("Me"));
     }
 
     #[test]
