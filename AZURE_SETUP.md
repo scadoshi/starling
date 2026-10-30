@@ -1,100 +1,42 @@
-# Azure AD App Registration Guide
+# Azure Setup
 
-## Why You Need This
+Starling signs in as an Azure app that you register, so the only permissions it has are the ones you grant. It needs a work or school account: Microsoft's chat API doesn't serve personal accounts.
 
-The Microsoft Graph Explorer Client ID has restrictions. You need to register your own Azure AD application to authenticate with Microsoft Teams.
+If your organization doesn't let you register apps, ask your IT admin to do these steps and send you the client ID.
 
-## Step-by-Step Instructions
+## Register the app
 
-### 1. Go to Azure Portal
+1. Open the [Microsoft Entra admin center](https://entra.microsoft.com/) and go to App registrations, then New registration.
+2. Name it anything, such as `Starling`. For supported account types, pick "Accounts in any organizational directory": Starling signs in through Microsoft's common endpoint, which single-tenant apps can't use. Leave the redirect URI empty; device-code sign-in doesn't use one.
+3. Register, and copy the Application (client) ID from the overview page. It looks like `12345678-1234-1234-1234-123456789abc`.
 
-Open your browser and navigate to:
-**https://entra.microsoft.com/** (or **https://portal.azure.com**)
+## Allow device-code sign-in
 
-### 2. Register a New Application
+Under Authentication, find "Allow public client flows" in the advanced settings, set it to Yes, and save.
 
-1. In the left sidebar, navigate to: **Identity** → **Applications** → **App registrations**
-2. Click **+ New registration**
-3. Fill in the form:
-   - **Name**: `Starling` (or any name you prefer)
-   - **Supported account types**: Select **"Accounts in any organizational directory and personal Microsoft accounts"**
-   - **Redirect URI**: Leave this **blank** (device code flow doesn't need it)
-4. Click **Register**
+## Grant permissions
 
-### 3. Note Your Application (Client) ID
+Under API permissions, add a permission, choose Microsoft Graph, then Delegated permissions, and add:
 
-After registration, you'll see the **Overview** page:
-- Copy the **Application (client) ID** (it looks like: `12345678-1234-1234-1234-123456789abc`)
-- **Save this ID** - you'll need it in the next step!
+- `User.Read`, to read your name
+- `Chat.ReadWrite`, to read and send chat messages
+- `offline_access`, to stay signed in between runs
 
-### 4. Enable Public Client Flow
+Delegated, not Application: application permissions would let the app read every chat in the organization, and Starling never asks for that. If your organization requires admin consent, an admin has to grant it here before sign-in works.
 
-1. In the left sidebar, click **Authentication**
-2. Scroll down to **Advanced settings**
-3. Find **"Allow public client flows"**
-4. Toggle it to **Yes**
-5. Click **Save** at the top
+## Sign in
 
-### 5. Add API Permissions
+Run `starling`, paste the client ID, and follow the code it shows.
 
-1. In the left sidebar, click **API permissions**
-2. Click **+ Add a permission**
-3. Select **Microsoft Graph**
-4. Select **Delegated permissions**
-5. **IMPORTANT**: Search for and add these **exact** permissions:
-   - Type `User.Read` and check the box
-   - Type `Chat.ReadWrite` and check the box  
-   - Type `offline_access` and check the box
-   
-   > **Note**: Make sure you're adding **Delegated** permissions, not Application permissions!
-   
-6. Click **Add permissions**
-7. *Optional*: Click **Grant admin consent for [Your Organization]** (if you're an admin)
+## When sign-in fails
 
-**After adding permissions, your API permissions list should show:**
-- Microsoft Graph (3):
-  - User.Read
-  - Chat.ReadWrite
-  - offline_access
+Starling shows Microsoft's error on the client ID screen. The common ones:
 
-### Troubleshooting: "Invalid Scope" Error
+| Error | Cause |
+| --- | --- |
+| `AADSTS50059` | No app has that client ID. Check you copied the Application (client) ID, not the object or tenant ID. |
+| `AADSTS7000218` | Public client flows are off. |
+| `AADSTS65001` or "admin consent required" | Your organization requires an admin to approve the permissions. |
+| A scope "does not exist" | The permissions above are missing or were added as Application permissions. |
 
-If you get an error like `The scope 'User.Read Chat.ReadWrite offline_access' does not exist`, it means:
-
-1. **You haven't added the permissions yet** - Go back to step 5 and add them
-2. **You added Application permissions instead of Delegated** - Remove them and add Delegated permissions
-3. **The permissions weren't saved** - Refresh the Azure Portal page and check if they're still there
-
-### Troubleshooting: "Failed to get current user info"
-
-If you get this error, you're missing the `User.Read` permission:
-
-1. Go to **API permissions** in Azure Portal
-2. Click **+ Add a permission** → **Microsoft Graph** → **Delegated permissions**
-3. Search for and add `User.Read`
-4. **Delete your saved token**: `rm ~/.config/starling/token.json` on Linux, `rm ~/Library/Application\ Support/starling/token.json` on macOS
-5. Run the app again and re-authenticate
-
-### 6. Run Starling
-
-```bash
-starling
-```
-
-Paste the client ID when it asks, then follow the sign-in code it shows.
-
-## Troubleshooting
-
-**Q: I don't have access to Azure Portal**  
-A: Ask your IT administrator to register the app for you, or use a personal Microsoft account.
-
-**Q: I get "Admin consent required"**  
-A: Some organizations require admin approval. Contact your IT department.
-
-**Q: Where do I find the Azure Portal?**  
-A: Go to https://entra.microsoft.com/ or https://portal.azure.com/
-
-## What Permissions Mean
-
-- **Chat.ReadWrite**: Read and send Teams chat messages
-- **offline_access**: Keep you logged in (refresh tokens)
+After changing permissions, delete `token.json` from the config folder (see the README) so the next sign-in picks them up.
