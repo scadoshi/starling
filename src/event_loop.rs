@@ -96,11 +96,11 @@ impl EventLoop {
     /// # Errors
     ///
     /// Fails when the terminal cannot be drawn to or read from.
-    pub(crate) fn run<B: Backend>(
-        mut self,
-        terminal: &mut Terminal<B>,
-        app: &mut App,
-    ) -> Result<()> {
+    pub(crate) fn run<B>(mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+    where
+        B: Backend,
+        B::Error: Send + Sync + 'static,
+    {
         self.spawn_chat_refresh();
         self.open_selected(app);
 
